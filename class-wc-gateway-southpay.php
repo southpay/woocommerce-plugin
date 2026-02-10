@@ -109,8 +109,8 @@ function southpay_wc_gateway_init()
 
             if (is_wp_error($response)) {
                 wc_add_notice(
-                    /* translators: %s: error message returned from SouthPay API */
                     sprintf(
+                        /* translators: %s: error message returned from SouthPay API */
                         __('Payment error: %s', 'southpay-gateway-for-woocommerce'),
                         esc_html($response->get_error_message())
                     ),
