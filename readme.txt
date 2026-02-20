@@ -5,8 +5,8 @@ Requires at least: 5.5
 Tested up to: 6.9
 Requires PHP: 7.4
 Stable tag: 1.0.0
-License: MIT
-License URI: https://opensource.org/licenses/MIT
+License: GPL-2.0-or-later
+License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
 Accept cryptocurrency payments in WooCommerce using SouthPay.
 
@@ -71,6 +71,16 @@ Make sure the Webhook Secret matches the one configured in WooCommerce.
 3. Customer is redirected to SouthPay hosted checkout.
 4. SouthPay processes the crypto payment.
 5. A secure webhook updates the WooCommerce order status automatically.
+
+== External services ==
+
+This plugin connects to the SouthPay API to create cryptocurrency payment sessions and update order statuses. It is required for the gateway to function.
+
+When a customer places an order using SouthPay as the payment method, the plugin sends the order total, currency, customer billing email, and return URLs to https://api.southpay.io/v1/payments to generate a hosted checkout session. No data is sent at any other time during normal store operation.
+
+This service is provided by SouthPay: https://southpay.io/
+Terms of service: https://southpay.io/terms
+Privacy policy: https://southpay.io/privacy
 
 == Frequently Asked Questions ==
 

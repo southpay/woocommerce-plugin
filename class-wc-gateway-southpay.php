@@ -7,10 +7,13 @@
  * Version:                 1.0.0
  * Author:                  SouthPay
  * Author URI:              https://southpay.io/
- * License:                 MIT
+ * License:                 GPL-2.0-or-later
+ * License URI:             https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain:             southpay-gateway-for-woocommerce
  * Requires at least:       5.5
+ * Requires PHP:            7.4
  * WC requires at least:    4.9.4
+ * Requires Plugins:        woocommerce
  */
 
 if (!defined('ABSPATH')) {
@@ -82,11 +85,60 @@ function southpay_wc_gateway_init()
             $this->invoice_prefix = $this->get_option('invoice_prefix', 'WC-');
             $this->debug_mode     = 'yes' === $this->get_option('debug_mode');
 
-            $this->log = new WC_Logger();
+            $this->log = wc_get_logger();
 
             add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
             add_action('woocommerce_api_wc_gateway_southpay', array($this, 'handle_webhook'));
             add_action('woocommerce_thankyou_' . $this->id, array($this, 'thankyou_page'));
+        }
+
+        public function init_form_fields()
+        {
+            $this->form_fields = array(
+                'title' => array(
+                    'title'       => __('Title', 'southpay-gateway-for-woocommerce'),
+                    'type'        => 'text',
+                    'description' => __('Payment method title shown to customers at checkout.', 'southpay-gateway-for-woocommerce'),
+                    'default'     => __('Crypto via SouthPay', 'southpay-gateway-for-woocommerce'),
+                    'desc_tip'    => true,
+                ),
+                'description' => array(
+                    'title'       => __('Description', 'southpay-gateway-for-woocommerce'),
+                    'type'        => 'textarea',
+                    'description' => __('Payment method description shown to customers at checkout.', 'southpay-gateway-for-woocommerce'),
+                    'default'     => __('Pay securely with cryptocurrency via SouthPay.', 'southpay-gateway-for-woocommerce'),
+                    'desc_tip'    => true,
+                ),
+                'api_url' => array(
+                    'title'       => __('API URL', 'southpay-gateway-for-woocommerce'),
+                    'type'        => 'text',
+                    'description' => __('SouthPay API base URL.', 'southpay-gateway-for-woocommerce'),
+                    'default'     => 'https://api.southpay.io',
+                    'desc_tip'    => true,
+                ),
+                'webhook_secret' => array(
+                    'title'       => __('Webhook Secret', 'southpay-gateway-for-woocommerce'),
+                    'type'        => 'password',
+                    'description' => __('Your store webhook secret from the SouthPay dashboard. Used for both API authentication and webhook signature verification.', 'southpay-gateway-for-woocommerce'),
+                    'default'     => '',
+                    'desc_tip'    => true,
+                ),
+                'invoice_prefix' => array(
+                    'title'       => __('Invoice Prefix', 'southpay-gateway-for-woocommerce'),
+                    'type'        => 'text',
+                    'description' => __('Prefix added to WooCommerce order numbers in merchant references.', 'southpay-gateway-for-woocommerce'),
+                    'default'     => 'WC-',
+                    'desc_tip'    => true,
+                ),
+                'debug_mode' => array(
+                    'title'       => __('Debug Mode', 'southpay-gateway-for-woocommerce'),
+                    'type'        => 'checkbox',
+                    'label'       => __('Enable debug logging', 'southpay-gateway-for-woocommerce'),
+                    'description' => __('Log debug messages to the WooCommerce log.', 'southpay-gateway-for-woocommerce'),
+                    'default'     => 'no',
+                    'desc_tip'    => true,
+                ),
+            );
         }
 
         public function process_payment($order_id)
@@ -105,7 +157,12 @@ function southpay_wc_gateway_init()
                 ),
             );
 
-            $response = $this->api_request('POST', '/v1/payments', $payment_data);
+            $response = $this->api_request(
+                'POST',
+                '/v1/payments',
+                $payment_data,
+                array('Idempotency-Key' => 'WC-' . $order_id)
+            );
 
             if (is_wp_error($response)) {
                 wc_add_notice(
@@ -148,32 +205,37 @@ function southpay_wc_gateway_init()
             $raw_body = file_get_contents('php://input');
             $payload  = json_decode($raw_body, true);
 
-            // Check for missing payload
-            if (!$payload || empty($payload['merchant_reference'])) {
+            if (!$payload) {
                 wp_die('Invalid payload', 'SouthPay Webhook', array('response' => 400));
             }
 
-            // Verify webhook secret header
-            $headers = getallheaders();
-            if (empty($headers['X-API-Key']) || $headers['X-API-Key'] !== $this->webhook_secret) {
+            // Verify HMAC-SHA512 signature
+            // PHP normalises HTTP_* headers from $_SERVER regardless of web server.
+            $signature = isset($_SERVER['HTTP_X_SOUTHPAY_SIG'])
+                ? sanitize_text_field(wp_unslash($_SERVER['HTTP_X_SOUTHPAY_SIG']))
+                : '';
+
+            if (empty($signature) || !$this->verify_webhook_signature($raw_body, $signature)) {
                 wp_die('Unauthorized', 'SouthPay Webhook', array('response' => 403));
             }
 
-            $order_number = str_replace($this->invoice_prefix, '', $payload['merchant_reference']);
-            $order_id     = wc_get_order_id_by_order_key($order_number);
-            $order        = $order_id ? wc_get_order($order_id) : false;
+            $data = isset($payload['data']) ? $payload['data'] : array();
+
+            // Look up order via metadata.order_id embedded in webhook data
+            $order_id = isset($data['metadata']['order_id']) ? absint($data['metadata']['order_id']) : 0;
+            $order    = $order_id ? wc_get_order($order_id) : false;
 
             if (!$order) {
                 wp_die('Order not found', 'SouthPay Webhook', array('response' => 404));
             }
 
             $event  = isset($payload['event']) ? sanitize_text_field($payload['event']) : '';
-            $status = isset($payload['status']) ? sanitize_text_field($payload['status']) : '';
+            $status = isset($data['status']) ? sanitize_text_field($data['status']) : '';
 
             switch ($event) {
                 case 'payment.completed':
                     if ('paid' === $status) {
-                        $this->payment_completed($order, $payload);
+                        $this->payment_completed($order, $data);
                     }
                     break;
 
@@ -194,6 +256,44 @@ function southpay_wc_gateway_init()
 
             status_header(200);
             exit;
+        }
+
+        private function verify_webhook_signature($raw_body, $signature)
+        {
+            $payload = json_decode($raw_body, true);
+            if (!is_array($payload)) {
+                return false;
+            }
+
+            $sorted   = $this->sort_keys_recursive($payload);
+            $json     = json_encode($sorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+
+            if (false === $json) {
+                return false;
+            }
+
+            $expected = hash_hmac('sha512', $json, $this->webhook_secret);
+
+            return hash_equals($expected, $signature);
+        }
+
+        private function sort_keys_recursive($data)
+        {
+            if (!is_array($data)) {
+                return $data;
+            }
+
+            if (array_keys($data) === range(0, count($data) - 1)) {
+                return array_map(array($this, 'sort_keys_recursive'), $data);
+            }
+
+            ksort($data);
+
+            foreach ($data as $key => $value) {
+                $data[$key] = $this->sort_keys_recursive($value);
+            }
+
+            return $data;
         }
 
         private function payment_completed($order, $payload)
@@ -223,16 +323,19 @@ function southpay_wc_gateway_init()
             $order->payment_complete($payment_id);
         }
 
-        private function api_request($method, $endpoint, $data = null)
+        private function api_request($method, $endpoint, $data = null, $extra_headers = array())
         {
             $url = trailingslashit($this->api_url) . ltrim($endpoint, '/');
 
             $args = array(
                 'method'  => $method,
                 'timeout' => 30,
-                'headers' => array(
-                    'Content-Type' => 'application/json',
-                    'X-API-Key'    => $this->webhook_secret,
+                'headers' => array_merge(
+                    array(
+                        'Content-Type' => 'application/json',
+                        'X-API-Key'    => $this->webhook_secret,
+                    ),
+                    $extra_headers
                 ),
             );
 
