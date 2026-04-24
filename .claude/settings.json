@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "wordpress.com@claude-plugins-official": true
+  }
+}
