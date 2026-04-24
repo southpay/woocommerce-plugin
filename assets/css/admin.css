@@ -1,0 +1,97 @@
+/* SouthPay Gateway — Admin Settings */
+
+/* ── Section titles ────────────────────────────────────────── */
+.woocommerce table.form-table .soutpaygw-section-title th {
+	padding-top: 28px;
+}
+
+/* ── Connection card ────────────────────────────────────────── */
+.soutpaygw-connection-card {
+	background: #fff;
+	border: 1px solid #dcdcde;
+	border-radius: 4px;
+	padding: 20px 24px;
+	max-width: 620px;
+}
+
+/* status badge */
+.soutpaygw-status {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-weight: 600;
+	font-size: 13px;
+	margin-bottom: 16px;
+}
+
+.soutpaygw-status-dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.soutpaygw-status--connected .soutpaygw-status-dot  { background: #00a32a; }
+.soutpaygw-status--connected .soutpaygw-status-label { color: #00a32a; }
+
+.soutpaygw-status--warning .soutpaygw-status-dot  { background: #dba617; }
+.soutpaygw-status--warning .soutpaygw-status-label { color: #dba617; }
+
+.soutpaygw-status--disconnected .soutpaygw-status-dot  { background: #8c8f94; }
+.soutpaygw-status--disconnected .soutpaygw-status-label { color: #50575e; }
+
+/* action button row */
+.soutpaygw-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-bottom: 8px;
+}
+
+/* connect CTA */
+.soutpaygw-connect-cta {
+	text-align: center;
+	padding: 8px 0 4px;
+}
+
+.soutpaygw-connect-cta .button-hero {
+	min-width: 220px;
+}
+
+.soutpaygw-connect-cta .soutpaygw-hint {
+	color: #646970;
+	font-size: 12px;
+	margin: 10px 0 0;
+}
+
+/* inline status message */
+#soutpaygw-status-msg {
+	font-size: 13px;
+	margin: 6px 0 0;
+	min-height: 1.4em;
+}
+
+/* webhook URL row */
+.soutpaygw-webhook-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 14px;
+	padding-top: 14px;
+	border-top: 1px solid #f0f0f1;
+	font-size: 12px;
+	color: #646970;
+}
+
+.soutpaygw-webhook-row input[type="text"] {
+	flex: 1;
+	font-family: monospace;
+	font-size: 12px;
+	max-width: 400px;
+}
+
+/* danger link */
+.soutpaygw-disconnect-link {
+	color: #d63638 !important;
+}

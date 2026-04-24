@@ -37,20 +37,10 @@ function soutpaygw_declare_wc_compatibility() {
 	}
 }
 
-add_action( 'init', 'soutpaygw_load_textdomain' );
-
-function soutpaygw_load_textdomain() {
-	load_plugin_textdomain(
-		'southpay-gateway-for-woocommerce',
-		false,
-		dirname( plugin_basename( __FILE__ ) ) . '/languages'
-	);
-}
-
 add_filter( 'woocommerce_payment_gateways', 'soutpaygw_add_gateway' );
 
 function soutpaygw_add_gateway( $gateways ) {
-	$gateways[] = 'WC_Gateway_SoutPayGW';
+	$gateways[] = 'SOUTPAYGW_Gateway';
 	return $gateways;
 }
 
@@ -85,5 +75,5 @@ function soutpaygw_register_blocks_support( $registry ) {
 		return;
 	}
 	require_once SOUTPAYGW_PLUGIN_DIR . 'includes/class-southpay-blocks.php';
-	$registry->register( new WC_SoutPayGW_Blocks_Support() );
+	$registry->register( new SOUTPAYGW_Blocks_Support() );
 }

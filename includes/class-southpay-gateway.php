@@ -4,7 +4,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-class WC_Gateway_SoutPayGW extends WC_Payment_Gateway {
+class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 
 	const SUPPORTED_CURRENCIES = array( 'AUD', 'BRL', 'EUR', 'GBP', 'NGN', 'RUB', 'TRY', 'UAH', 'USD', 'USDT', 'USDC' );
 
@@ -48,10 +48,27 @@ class WC_Gateway_SoutPayGW extends WC_Payment_Gateway {
 		add_action( 'woocommerce_api_wc_gateway_soutpaygw_oauth', array( $this, 'handle_oauth_callback' ) );
 		add_action( 'woocommerce_thankyou_' . $this->id, array( $this, 'thankyou_page' ) );
 		add_action( 'admin_notices', array( $this, 'admin_notices' ) );
+		add_action( 'admin_enqueue_scripts', array( $this, 'admin_enqueue_scripts' ) );
 		add_action( 'wp_ajax_soutpaygw_test_connection', array( $this, 'ajax_test_connection' ) );
 		add_action( 'wp_ajax_soutpaygw_reconnect_webhook', array( $this, 'ajax_reconnect_webhook' ) );
 		add_action( 'wp_ajax_soutpaygw_init_oauth', array( $this, 'ajax_init_oauth_flow' ) );
 		add_action( 'wp_ajax_soutpaygw_disconnect_oauth', array( $this, 'ajax_disconnect_oauth' ) );
+	}
+
+	public function admin_enqueue_scripts( $hook ) {
+		if ( 'woocommerce_page_wc-settings' !== $hook ) {
+			return;
+		}
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( ( $_GET['tab'] ?? '' ) !== 'checkout' || ( $_GET['section'] ?? '' ) !== $this->id ) {
+			return;
+		}
+		wp_enqueue_style(
+			'soutpaygw-admin',
+			SOUTPAYGW_PLUGIN_URL . 'assets/css/admin.css',
+			array(),
+			SOUTPAYGW_VERSION
+		);
 	}
 
 	public function is_available() {
@@ -89,6 +106,7 @@ class WC_Gateway_SoutPayGW extends WC_Payment_Gateway {
 	}
 
 	public function admin_notices() {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only URL param set by this plugin's own OAuth redirect; no form processing occurs.
 		$oauth_status = isset( $_GET['soutpaygw_oauth'] ) ? sanitize_text_field( wp_unslash( $_GET['soutpaygw_oauth'] ) ) : '';
 		if ( 'connected' === $oauth_status ) {
 			echo '<div class="notice notice-success is-dismissible"><p>' .
@@ -256,63 +274,77 @@ class WC_Gateway_SoutPayGW extends WC_Payment_Gateway {
 				<label><?php echo esc_html( $data['title'] ); ?></label>
 			</th>
 			<td class="forminp">
-				<?php if ( $is_connected && $is_oauth ) : ?>
-					<span style="color:#00a32a;font-weight:600;">&#10003; <?php esc_html_e( 'Connected via SouthPay', 'southpay-gateway-for-woocommerce' ); ?></span>
-					&nbsp;&nbsp;
-					<button type="button" class="button button-secondary" id="soutpaygw-test-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
-						<?php esc_html_e( 'Test connection', 'southpay-gateway-for-woocommerce' ); ?>
-					</button>
-					&nbsp;
-					<button type="button" class="button button-link" id="soutpaygw-reconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
-						<?php esc_html_e( 'Reconnect webhook', 'southpay-gateway-for-woocommerce' ); ?>
-					</button>
-					&nbsp;
-					<button type="button" class="button button-link" id="soutpaygw-disconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>" style="color:#d63638;">
-						<?php esc_html_e( 'Disconnect', 'southpay-gateway-for-woocommerce' ); ?>
-					</button>
-				<?php elseif ( $is_oauth && $has_key ) : ?>
-					<span style="color:#d63638;font-weight:600;">&#9888; <?php esc_html_e( 'Connected — webhook setup incomplete.', 'southpay-gateway-for-woocommerce' ); ?></span>
-					&nbsp;&nbsp;
-					<button type="button" class="button button-primary" id="soutpaygw-reconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
-						<?php esc_html_e( 'Reconnect webhook', 'southpay-gateway-for-woocommerce' ); ?>
-					</button>
-					&nbsp;
-					<button type="button" class="button button-link" id="soutpaygw-disconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>" style="color:#d63638;">
-						<?php esc_html_e( 'Disconnect', 'southpay-gateway-for-woocommerce' ); ?>
-					</button>
-				<?php elseif ( $is_connected ) : ?>
-					<span style="color:#00a32a;font-weight:600;">&#10003; <?php esc_html_e( 'Connected to SouthPay', 'southpay-gateway-for-woocommerce' ); ?></span>
-					&nbsp;&nbsp;
-					<button type="button" class="button button-secondary" id="soutpaygw-test-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
-						<?php esc_html_e( 'Test connection', 'southpay-gateway-for-woocommerce' ); ?>
-					</button>
-					&nbsp;
-					<button type="button" class="button button-link" id="soutpaygw-reconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>" style="color:#d63638;">
-						<?php esc_html_e( 'Reconnect webhook', 'southpay-gateway-for-woocommerce' ); ?>
-					</button>
-				<?php elseif ( $has_key ) : ?>
-					<span style="color:#d63638;font-weight:600;">&#9888; <?php esc_html_e( 'API key saved — save settings to finish connecting.', 'southpay-gateway-for-woocommerce' ); ?></span>
-				<?php else : ?>
-					<span style="color:#646970;"><?php esc_html_e( 'Not connected.', 'southpay-gateway-for-woocommerce' ); ?></span>
-					<p style="margin-top:10px;">
-						<button type="button" class="button button-primary button-hero" id="soutpaygw-connect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
-							<?php esc_html_e( 'Connect with SouthPay', 'southpay-gateway-for-woocommerce' ); ?>
-						</button>
-					</p>
-					<p class="description" style="margin-top:6px;">
-						<?php esc_html_e( 'One click — sign in to your SouthPay account and your store is set up automatically. Or enter an API key below instead.', 'southpay-gateway-for-woocommerce' ); ?>
-					</p>
-				<?php endif; ?>
+				<div class="soutpaygw-connection-card">
 
-				<p id="soutpaygw-status-msg" style="margin-top:6px;"></p>
+					<?php if ( $is_connected ) : ?>
+						<div class="soutpaygw-status soutpaygw-status--connected">
+							<span class="soutpaygw-status-dot"></span>
+							<span class="soutpaygw-status-label">
+								<?php echo $is_oauth
+									? esc_html__( 'Connected via SouthPay', 'southpay-gateway-for-woocommerce' )
+									: esc_html__( 'Connected to SouthPay', 'southpay-gateway-for-woocommerce' );
+								?>
+							</span>
+						</div>
+						<div class="soutpaygw-actions">
+							<button type="button" class="button button-secondary" id="soutpaygw-test-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
+								<?php esc_html_e( 'Test connection', 'southpay-gateway-for-woocommerce' ); ?>
+							</button>
+							<button type="button" class="button button-link" id="soutpaygw-reconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
+								<?php esc_html_e( 'Reconnect webhook', 'southpay-gateway-for-woocommerce' ); ?>
+							</button>
+							<?php if ( $is_oauth ) : ?>
+								<button type="button" class="button button-link soutpaygw-disconnect-link" id="soutpaygw-disconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
+									<?php esc_html_e( 'Disconnect', 'southpay-gateway-for-woocommerce' ); ?>
+								</button>
+							<?php endif; ?>
+						</div>
 
-				<?php if ( $is_connected ) : ?>
-					<p class="description" style="margin-top:10px;">
-						<?php esc_html_e( 'Webhook URL:', 'southpay-gateway-for-woocommerce' ); ?>
-						<input type="text" value="<?php echo esc_attr( $webhook_url ); ?>" readonly
-							style="width:480px;font-family:monospace;font-size:12px;margin-left:6px;" onclick="this.select()" />
-					</p>
-				<?php endif; ?>
+					<?php elseif ( $is_oauth && $has_key ) : ?>
+						<div class="soutpaygw-status soutpaygw-status--warning">
+							<span class="soutpaygw-status-dot"></span>
+							<span class="soutpaygw-status-label"><?php esc_html_e( 'Connected — webhook setup incomplete', 'southpay-gateway-for-woocommerce' ); ?></span>
+						</div>
+						<div class="soutpaygw-actions">
+							<button type="button" class="button button-primary" id="soutpaygw-reconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
+								<?php esc_html_e( 'Reconnect webhook', 'southpay-gateway-for-woocommerce' ); ?>
+							</button>
+							<button type="button" class="button button-link soutpaygw-disconnect-link" id="soutpaygw-disconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
+								<?php esc_html_e( 'Disconnect', 'southpay-gateway-for-woocommerce' ); ?>
+							</button>
+						</div>
+
+					<?php elseif ( $has_key ) : ?>
+						<div class="soutpaygw-status soutpaygw-status--warning">
+							<span class="soutpaygw-status-dot"></span>
+							<span class="soutpaygw-status-label"><?php esc_html_e( 'API key saved — save settings to finish connecting', 'southpay-gateway-for-woocommerce' ); ?></span>
+						</div>
+
+					<?php else : ?>
+						<div class="soutpaygw-status soutpaygw-status--disconnected">
+							<span class="soutpaygw-status-dot"></span>
+							<span class="soutpaygw-status-label"><?php esc_html_e( 'Not connected', 'southpay-gateway-for-woocommerce' ); ?></span>
+						</div>
+						<div class="soutpaygw-connect-cta">
+							<button type="button" class="button button-primary button-hero" id="soutpaygw-connect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
+								<?php esc_html_e( 'Connect with SouthPay', 'southpay-gateway-for-woocommerce' ); ?>
+							</button>
+							<p class="soutpaygw-hint">
+								<?php esc_html_e( 'One click — sign in to your SouthPay account and your store is set up automatically. Or enter an API key below instead.', 'southpay-gateway-for-woocommerce' ); ?>
+							</p>
+						</div>
+					<?php endif; ?>
+
+					<p id="soutpaygw-status-msg"></p>
+
+					<?php if ( $is_connected ) : ?>
+						<div class="soutpaygw-webhook-row">
+							<span><?php esc_html_e( 'Webhook URL:', 'southpay-gateway-for-woocommerce' ); ?></span>
+							<input type="text" value="<?php echo esc_attr( $webhook_url ); ?>" readonly onclick="this.select()" />
+						</div>
+					<?php endif; ?>
+
+				</div>
 			</td>
 		</tr>
 		<script>
@@ -781,9 +813,11 @@ class WC_Gateway_SoutPayGW extends WC_Payment_Gateway {
 	}
 
 	public function handle_oauth_callback() {
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- OAuth callback; CSRF is handled by the state/PKCE verifier checked below.
 		$state    = isset( $_GET['state'] ) ? sanitize_text_field( wp_unslash( $_GET['state'] ) ) : '';
 		$code     = isset( $_GET['code'] ) ? sanitize_text_field( wp_unslash( $_GET['code'] ) ) : '';
 		$error    = isset( $_GET['error'] ) ? sanitize_text_field( wp_unslash( $_GET['error'] ) ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
 		$settings_url = admin_url( 'admin.php?page=wc-settings&tab=checkout&section=soutpaygw_gateway' );
 
 		if ( $error ) {
