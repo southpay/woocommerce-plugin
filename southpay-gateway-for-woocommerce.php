@@ -3,7 +3,7 @@
  * @wordpress-plugin
  * Plugin Name:             SouthPay Gateway for WooCommerce
  * Description:             Cryptocurrency Payment Gateway powered by SouthPay.
- * Version:                 2.0.0
+ * Version:                 2.1.0
  * Author:                  SouthPay
  * Author URI:              https://southpay.io/
  * License:                 GPL-2.0-or-later
@@ -20,13 +20,15 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SOUTPAYGW_VERSION', '2.0.0' );
+define( 'SOUTPAYGW_VERSION', '2.1.0' );
 define( 'SOUTPAYGW_PLUGIN_FILE', __FILE__ );
 define( 'SOUTPAYGW_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SOUTPAYGW_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'SOUTPAYGW_API_BASE', 'https://api.southpay.io' );
 define( 'SOUTPAYGW_DASHBOARD_BASE', 'https://app.southpay.io' );
 define( 'SOUTPAYGW_PAY_BASE', 'https://pay.southpay.io' );
+define( 'SOUTPAYGW_OAUTH_CLIENT_ID', 'spo_app_woocommerce' );
+define( 'SOUTPAYGW_OAUTH_SCOPES', 'payments:write webhooks:write stores:read offline_access' );
 
 add_action( 'before_woocommerce_init', 'soutpaygw_declare_wc_compatibility' );
 

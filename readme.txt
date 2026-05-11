@@ -4,7 +4,7 @@ Tags: woocommerce, crypto, cryptocurrency, bitcoin, payment gateway
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 2.0.0
+Stable tag: 2.1.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -18,8 +18,11 @@ Customers are redirected to a secure SouthPay-hosted checkout where they can pay
 
 == Features ==
 
+* One-click "Connect with SouthPay" — OAuth 2.0 with PKCE, no key copy-pasting
+* Automatic background token refresh — the connection stays live without merchant action
 * Accept cryptocurrency payments via a hosted checkout
 * Automatic order status updates via secure webhooks
+* Automatic webhook endpoint registration after first connection
 * HMAC-SHA256 webhook signature verification (Stripe-compatible format)
 * Configurable invoice prefix
 * Minimum order amount filter
@@ -38,31 +41,35 @@ Customers are redirected to a secure SouthPay-hosted checkout where they can pay
 
 1. Upload the plugin folder to `/wp-content/plugins/`, or install via the WordPress plugin screen.
 2. Activate the plugin through the "Plugins" menu in WordPress.
-3. Go to **WooCommerce → Settings → Payments**.
-4. Enable **SouthPay** and click **Manage**.
-5. Enter your API Key and Webhook Signing Secret.
-6. Save changes.
+3. Go to **WooCommerce → Settings → Payments**, enable **SouthPay**, and click **Manage**.
+4. Click **Connect with SouthPay**. You will be redirected to SouthPay to authorise the connection.
+5. Choose the store to connect, approve the requested permissions, and you are returned to WooCommerce. The webhook endpoint is registered automatically.
+
+That's it — you are ready to accept crypto payments.
 
 == Configuration ==
 
-After activation:
+After connecting:
 
 1. Navigate to **WooCommerce → Settings → Payments → SouthPay**.
-2. Configure:
+2. Configure the checkout-facing settings:
    * Title and Description (shown to customers at checkout)
-   * API Key (from SouthPay dashboard → Settings → API Keys)
-   * Webhook Signing Secret (from your webhook endpoint in SouthPay dashboard)
    * Invoice Prefix (optional)
    * Minimum Order Amount (optional)
    * Debug Mode (optional)
+3. The connection itself is managed via the **Connect / Disconnect** buttons at the top of the page.
+
+== Authentication ==
+
+The plugin uses OAuth 2.0 with PKCE and a refresh token (the `offline_access` scope) so the connection stays alive without merchant intervention. Access tokens are short-lived (one hour) and are refreshed automatically before each API call. If the refresh token is ever revoked (for example by an admin in your SouthPay dashboard), the plugin will surface a "Reconnect your account" notice in WooCommerce.
+
+For environments that cannot use the OAuth flow (rare — typically air-gapped or whitelabel setups), you can paste a long-lived API key from **SouthPay Dashboard → Developers → API Keys** into the **API Key** field. This mode does not auto-refresh.
 
 == Webhook Setup ==
 
-1. In your SouthPay dashboard, go to **Settings → Webhook Endpoints → Add Endpoint**.
-2. Set the platform to **WooCommerce** and paste your store URL.
-3. For the webhook URL, use the value shown in your SouthPay settings page in WooCommerce.
-4. Copy the signing secret shown after creating the endpoint.
-5. Paste the signing secret into **WooCommerce → Settings → Payments → SouthPay → Webhook Signing Secret**.
+The webhook endpoint is registered automatically the first time you connect. The plugin uses the URL shown in the **Webhook URL** row of the settings page, and HMAC-SHA256 signature verification (Stripe-compatible) protects every inbound request.
+
+If you ever need to rotate the signing secret, use the **Reconnect webhook** button on the settings page.
 
 == How It Works ==
 
@@ -107,6 +114,14 @@ Each webhook delivery is signed with HMAC-SHA256. The plugin verifies the signat
 Supported cryptocurrencies depend on your SouthPay account configuration. Contact SouthPay support for details.
 
 == Changelog ==
+
+= 2.1.0 =
+* One-click "Connect with SouthPay" using OAuth 2.0 with PKCE
+* Automatic refresh-token rotation — connections survive token expiry without merchant action
+* Reconnect-required admin notice when the refresh family is revoked server-side
+* Disconnect now revokes the entire token family server-side, not just the active access token
+* Webhook endpoint is registered automatically after OAuth completes — no more secret copy-paste
+* Manual API key paste is still supported as a fallback for environments without browser access
 
 = 2.0.0 =
 * Integrated SouthPay API v2
