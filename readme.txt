@@ -1,18 +1,18 @@
-=== SouthPay Gateway for WooCommerce ===
+=== SouthPay Crypto Payment Gateway ===
 Contributors: southpay
 Tags: woocommerce, crypto, cryptocurrency, bitcoin, payment gateway
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 2.1.1
+Stable tag: 2.1.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Accept cryptocurrency payments in WooCommerce using SouthPay.
+Accept cryptocurrency payments in WooCommerce via SouthPay's hosted checkout, with one-click OAuth connect and automatic webhook registration.
 
 == Description ==
 
-SouthPay Gateway for WooCommerce allows you to accept cryptocurrency payments directly in your WooCommerce store.
+SouthPay Crypto Payment Gateway lets your WooCommerce store accept cryptocurrency payments through SouthPay's secure hosted checkout. Connect in one click via OAuth, and the plugin handles webhook setup, token refresh, and on-chain confirmation automatically — no key copy-pasting and no manual webhook configuration.
 
 Customers are redirected to a secure SouthPay-hosted checkout where they can pay using supported cryptocurrencies. The order status updates automatically via webhook once payment is confirmed on-chain.
 
@@ -34,52 +34,76 @@ Customers are redirected to a secure SouthPay-hosted checkout where they can pay
 
 * WordPress 5.8 or higher
 * WooCommerce 6.0 or higher
-* PHP 7.4 or higher
-* A SouthPay merchant account
+* PHP 7.4 or higher (cURL and OpenSSL extensions enabled)
+* HTTPS on your store domain — required for OAuth redirect and webhook delivery
+* A publicly reachable site URL so SouthPay can POST webhook events
+* A SouthPay merchant account at https://southpay.io/
 
 == Installation ==
 
-1. Upload the plugin folder to `/wp-content/plugins/`, or install via the WordPress plugin screen.
+1. Upload the plugin folder to `/wp-content/plugins/`, or install via the WordPress plugin screen (Plugins → Add New → Upload).
 2. Activate the plugin through the "Plugins" menu in WordPress.
-3. Go to **WooCommerce → Settings → Payments**, enable **SouthPay**, and click **Manage**.
-4. Click **Connect with SouthPay**. You will be redirected to SouthPay to authorise the connection.
-5. Choose the store to connect, approve the requested permissions, and you are returned to WooCommerce. The webhook endpoint is registered automatically.
+3. Go to **WooCommerce → Settings → Payments**, find **SouthPay** in the list, and click **Manage**.
+4. Tick **Enable SouthPay** and click **Connect with SouthPay**.
+5. You are redirected to SouthPay to sign in, pick the store to connect, and approve the requested permissions.
+6. On return, the plugin stores the OAuth tokens and registers a webhook endpoint automatically. The settings page will show **Status: Connected**.
 
-That's it — you are ready to accept crypto payments.
+That's it — you are ready to accept crypto payments. No API keys to copy, no webhook URLs to paste.
 
 == Configuration ==
 
-After connecting:
+All settings live at **WooCommerce → Settings → Payments → SouthPay**.
 
-1. Navigate to **WooCommerce → Settings → Payments → SouthPay**.
-2. Configure the checkout-facing settings:
-   * Title and Description (shown to customers at checkout)
-   * Invoice Prefix (optional)
-   * Minimum Order Amount (optional)
-   * Debug Mode (optional)
-3. The connection itself is managed via the **Connect / Disconnect** buttons at the top of the page.
+**Your SouthPay Account**
+
+* **Status** — shows the current connection state (Connected, Disconnected, or Reconnect Required) and the connected store name.
+* **Connect / Disconnect** — manages the OAuth connection. Disconnecting revokes the refresh-token family on SouthPay's side, not just the local copy.
+* **API Key** — only used as a manual fallback when OAuth isn't possible (see *Authentication* below). Leave blank in the normal OAuth flow.
+
+**Checkout Appearance**
+
+* **Payment Method Name** — what customers see at checkout (default: *SouthPay*). Customise this to something like "Pay with Crypto".
+* **Payment Method Description** — short text shown below the name at checkout.
+
+**Advanced**
+
+* **Minimum Order Amount** — hides SouthPay at checkout when the cart total is below this value. Set to `0` to always show it. Default: `1`.
+* **Order Reference Prefix** — prepended to the order number sent to SouthPay (default: `WC-`), so orders are easy to identify in the SouthPay dashboard.
+* **Debug Logging** — writes detailed request/response logs to **WooCommerce → Status → Logs** under the `southpay` source. Enable only when troubleshooting; the logs can contain order metadata.
 
 == Authentication ==
 
-The plugin uses OAuth 2.0 with PKCE and a refresh token (the `offline_access` scope) so the connection stays alive without merchant intervention. Access tokens are short-lived (one hour) and are refreshed automatically before each API call. If the refresh token is ever revoked (for example by an admin in your SouthPay dashboard), the plugin will surface a "Reconnect your account" notice in WooCommerce.
+The plugin uses **OAuth 2.0 with PKCE** and the `offline_access` scope, so the connection survives access-token expiry without merchant intervention:
 
-For environments that cannot use the OAuth flow (rare — typically air-gapped or whitelabel setups), you can paste a long-lived API key from **SouthPay Dashboard → Developers → API Keys** into the **API Key** field. This mode does not auto-refresh.
+* Access tokens are short-lived (one hour) and refreshed automatically before each API call.
+* Refresh tokens rotate on every use, and the previous refresh token is invalidated server-side.
+* If the refresh-token family is ever revoked (for example, an admin clicks *Disconnect* in the SouthPay dashboard), the plugin surfaces a **Reconnect your account** admin notice in WooCommerce and the gateway is hidden at checkout until reconnected.
+* Disconnecting from the WooCommerce side calls SouthPay's revoke endpoint to invalidate the entire token family — not just the locally cached access token.
+
+**Manual API Key fallback.** For environments without browser access (air-gapped boxes, whitelabel deployments, automated provisioning), paste a long-lived API key from **SouthPay Dashboard → Developers → API Keys** into the **API Key** field. This mode bypasses OAuth and does not auto-refresh; you are responsible for rotating the key yourself. The webhook still needs to be created manually in this mode.
 
 == Webhook Setup ==
 
-The webhook endpoint is registered automatically the first time you connect. The plugin uses the URL shown in the **Webhook URL** row of the settings page, and HMAC-SHA256 signature verification protects every inbound request.
+In the standard OAuth flow there is nothing to configure — the plugin registers a webhook endpoint pointing at your site automatically the first time you connect, and stores the signing secret locally.
 
-If you ever need to rotate the signing secret, use the **Reconnect webhook** button on the settings page.
+* The active endpoint URL is shown in the **Webhook URL** row on the settings page (it is the WooCommerce REST route `/wc-api/southpay_webhook`).
+* Every inbound delivery is signed with **HMAC-SHA256** over the raw request body plus a timestamp. The plugin rejects requests with a missing, malformed, or stale signature before any order state is touched.
+* If you ever need to rotate the signing secret (for example, after a security incident or when migrating environments), click **Reconnect webhook** on the settings page. The plugin will deregister the old endpoint and create a new one with a fresh secret in one step.
 
 == How It Works ==
 
-1. Customer selects SouthPay at checkout.
-2. The order is created with "Pending payment" status.
-3. Customer is redirected to the SouthPay hosted checkout.
-4. Customer completes payment using their preferred cryptocurrency.
-5. SouthPay confirms the on-chain transaction and fires a webhook.
-6. The WooCommerce order status updates to "Processing" automatically.
-7. Customer is redirected back to your store's order confirmation page.
+1. The customer selects SouthPay at checkout and clicks **Place order**.
+2. WooCommerce creates the order with status **Pending payment**.
+3. The plugin calls `POST https://api.southpay.io/api/v2/payments` with the order total, currency, order reference, and return URLs to create a hosted-checkout session.
+4. The customer is redirected to SouthPay's hosted checkout, where they choose a cryptocurrency, see the quoted amount and exchange rate, and send the funds from their wallet.
+5. Once the transaction is confirmed on-chain, SouthPay POSTs a signed webhook to your store.
+6. The plugin verifies the HMAC-SHA256 signature, matches the event to the WooCommerce order, and transitions the order:
+   * **paid** → order moves to *Processing* (or *Completed* for virtual orders), and a payment note is added.
+   * **expired** → order moves to *Cancelled*.
+   * **failed** → order moves to *Failed*; the customer can retry from the order-pay page.
+7. The customer is redirected back to your store's order-received page.
+
+All state transitions are driven by webhooks — the customer's browser returning is not required to mark the order as paid.
 
 == External Services ==
 
@@ -114,6 +138,10 @@ Each webhook delivery is signed with HMAC-SHA256. The plugin verifies the signat
 Supported cryptocurrencies depend on your SouthPay account configuration. Contact SouthPay support for details.
 
 == Changelog ==
+
+= 2.1.2 =
+* Rename plugin to "SouthPay Crypto Payment Gateway"
+* Expanded plugin description and readme (requirements, configuration, authentication, webhook setup, end-to-end payment flow)
 
 = 2.1.1 =
 * Request a live-mode OAuth token at authorize time so webhook endpoints
