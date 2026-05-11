@@ -4,7 +4,7 @@ Tags: woocommerce, crypto, cryptocurrency, bitcoin, payment gateway
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 2.1.0
+Stable tag: 2.1.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -114,6 +114,12 @@ Each webhook delivery is signed with HMAC-SHA256. The plugin verifies the signat
 Supported cryptocurrencies depend on your SouthPay account configuration. Contact SouthPay support for details.
 
 == Changelog ==
+
+= 2.1.1 =
+* Request a live-mode OAuth token at authorize time so webhook endpoints
+  register in the correct mode (previously fell back to test mode, which
+  caused "Connected — webhook setup incomplete" on first connect for
+  live-only stores)
 
 = 2.1.0 =
 * One-click "Connect with SouthPay" using OAuth 2.0 with PKCE

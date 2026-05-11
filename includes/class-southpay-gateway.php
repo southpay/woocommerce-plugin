@@ -862,6 +862,7 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			'code_challenge'        => $code_challenge,
 			'code_challenge_method' => 'S256',
 			'state'                 => $state,
+			'livemode'              => 'true',
 		) );
 
 		wp_send_json_success( array( 'url' => $authorize_url ) );
