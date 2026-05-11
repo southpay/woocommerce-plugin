@@ -23,7 +23,7 @@ Customers are redirected to a secure SouthPay-hosted checkout where they can pay
 * Accept cryptocurrency payments via a hosted checkout
 * Automatic order status updates via secure webhooks
 * Automatic webhook endpoint registration after first connection
-* HMAC-SHA256 webhook signature verification (Stripe-compatible format)
+* HMAC-SHA256 webhook signature verification
 * Configurable invoice prefix
 * Minimum order amount filter
 * Debug logging via WooCommerce → Status → Logs
@@ -67,7 +67,7 @@ For environments that cannot use the OAuth flow (rare — typically air-gapped o
 
 == Webhook Setup ==
 
-The webhook endpoint is registered automatically the first time you connect. The plugin uses the URL shown in the **Webhook URL** row of the settings page, and HMAC-SHA256 signature verification (Stripe-compatible) protects every inbound request.
+The webhook endpoint is registered automatically the first time you connect. The plugin uses the URL shown in the **Webhook URL** row of the settings page, and HMAC-SHA256 signature verification protects every inbound request.
 
 If you ever need to rotate the signing secret, use the **Reconnect webhook** button on the settings page.
 
@@ -126,7 +126,7 @@ Supported cryptocurrencies depend on your SouthPay account configuration. Contac
 = 2.0.0 =
 * Integrated SouthPay API v2
 * Replaced popup checkout with direct hosted checkout redirect
-* Updated webhook signature verification to HMAC-SHA256 Stripe-style format
+* Updated webhook signature verification to timestamped HMAC-SHA256
 * Improved WordPress plugin review compliance: split into include files, added uninstall.php, hardened escaping
 * Added WooCommerce Block checkout support
 
