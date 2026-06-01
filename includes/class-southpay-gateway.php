@@ -457,6 +457,36 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 	public function process_payment( $order_id ) {
 		$order = wc_get_order( $order_id );
 
+		$line_items = array();
+		$image_url  = '';
+
+		foreach ( $order->get_items() as $item ) {
+			$quantity   = max( 1, (int) $item->get_quantity() );
+			$unit_cents = (int) round( ( (float) $item->get_subtotal() / $quantity ) * 100 );
+
+			$item_image = '';
+			$product    = $item->get_product();
+			if ( $product && $product->get_image_id() ) {
+				$item_image = wp_get_attachment_url( $product->get_image_id() );
+			}
+
+			if ( '' === $image_url && $item_image ) {
+				$image_url = $item_image;
+			}
+
+			$line_item = array(
+				'description'       => $item->get_name(),
+				'quantity'          => $quantity,
+				'unit_amount_cents' => $unit_cents,
+			);
+
+			if ( $item_image ) {
+				$line_item['image_url'] = esc_url_raw( $item_image );
+			}
+
+			$line_items[] = $line_item;
+		}
+
 		$body = array(
 			'payment_intent' => array(
 				'amount'      => number_format( (float) $order->get_total(), 2, '.', '' ),
@@ -470,6 +500,14 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 				),
 			),
 		);
+
+		if ( ! empty( $line_items ) ) {
+			$body['payment_intent']['line_items'] = $line_items;
+		}
+
+		if ( '' !== $image_url ) {
+			$body['payment_intent']['image_url'] = esc_url_raw( $image_url );
+		}
 
 		$response = $this->api_request(
 			'POST',
