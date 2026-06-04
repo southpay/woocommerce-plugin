@@ -4,7 +4,7 @@ Tags: woocommerce, crypto, cryptocurrency, bitcoin, payment gateway
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 2.1.2
+Stable tag: 2.1.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -138,6 +138,10 @@ Each webhook delivery is signed with HMAC-SHA256. The plugin verifies the signat
 Supported cryptocurrencies depend on your SouthPay account configuration. Contact SouthPay support for details.
 
 == Changelog ==
+
+= 2.1.3 =
+* Fix oversized payment method logo on the classic (shortcode) checkout by constraining the icon height
+* Add a "Payment Method Logo" setting to hide the logo at checkout (classic and blocks)
 
 = 2.1.2 =
 * Rename plugin to "SouthPay Crypto Payment Gateway"

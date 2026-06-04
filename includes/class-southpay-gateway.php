@@ -18,6 +18,8 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 
 	private $oauth_store_id;
 
+	private $show_icon;
+
 	private $invoice_prefix;
 
 	private $min_order_amount;
@@ -39,6 +41,7 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		$this->enabled          = $this->get_option( 'enabled' );
 		$this->title            = $this->get_option( 'title' );
 		$this->description      = $this->get_option( 'description' );
+		$this->show_icon        = 'yes' === $this->get_option( 'show_icon', 'yes' );
 		$this->api_key                 = $this->get_option( 'api_key' );
 		$this->refresh_token           = $this->get_option( 'refresh_token' );
 		$this->access_token_expires_at = (int) $this->get_option( 'access_token_expires_at', '0' );
@@ -59,6 +62,15 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		add_action( 'wp_ajax_soutpaygw_reconnect_webhook', array( $this, 'ajax_reconnect_webhook' ) );
 		add_action( 'wp_ajax_soutpaygw_init_oauth', array( $this, 'ajax_init_oauth_flow' ) );
 		add_action( 'wp_ajax_soutpaygw_disconnect_oauth', array( $this, 'ajax_disconnect_oauth' ) );
+	}
+
+	public function get_icon() {
+		if ( ! $this->show_icon ) {
+			return '';
+		}
+		$icon_url = SOUTPAYGW_PLUGIN_URL . 'assets/images/icons/southpay.png';
+		$icon     = '<img src="' . esc_url( WC_HTTPS::force_https_url( apply_filters( 'soutpaygw_icon', $icon_url ) ) ) . '" alt="' . esc_attr( $this->get_title() ) . '" style="max-height:24px;width:auto;display:inline-block;vertical-align:middle;" />';
+		return apply_filters( 'woocommerce_gateway_icon', $icon, $this->id );
 	}
 
 	public function admin_enqueue_scripts( $hook ) {
@@ -214,6 +226,15 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 				'title' => __( 'Checkout Appearance', 'southpay-gateway-for-woocommerce' ),
 				'type'  => 'title',
 				'description' => __( 'What customers see when choosing a payment method.', 'southpay-gateway-for-woocommerce' ),
+			),
+
+			'show_icon' => array(
+				'title'       => __( 'Payment Method Logo', 'southpay-gateway-for-woocommerce' ),
+				'type'        => 'checkbox',
+				'label'       => __( 'Show the SouthPay logo next to the payment method name', 'southpay-gateway-for-woocommerce' ),
+				'description' => __( 'Uncheck to hide the logo at checkout and show only the payment method name.', 'southpay-gateway-for-woocommerce' ),
+				'default'     => 'yes',
+				'desc_tip'    => true,
 			),
 
 			'title' => array(

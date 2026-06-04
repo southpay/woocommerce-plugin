@@ -31,7 +31,7 @@ class SOUTPAYGW_Blocks_Support extends Automattic\WooCommerce\Blocks\Payments\In
 		return array(
 			'title'       => $this->get_setting( 'title', __( 'Crypto via SouthPay', 'southpay-gateway-for-woocommerce' ) ),
 			'description' => $this->get_setting( 'description', __( 'Pay securely with cryptocurrency via SouthPay.', 'southpay-gateway-for-woocommerce' ) ),
-			'icon'        => SOUTPAYGW_PLUGIN_URL . 'assets/images/icons/southpay.png',
+			'icon'        => 'yes' === $this->get_setting( 'show_icon', 'yes' ) ? SOUTPAYGW_PLUGIN_URL . 'assets/images/icons/southpay.png' : '',
 			'supports'    => array( 'products' ),
 		);
 	}
