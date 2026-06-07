@@ -154,6 +154,10 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			echo '<div class="notice notice-error is-dismissible"><p>' .
 				esc_html__( 'SouthPay connection failed. Please try again.', 'southpay-gateway-for-woocommerce' ) .
 				'</p></div>';
+		} elseif ( 'testmode' === $oauth_status ) {
+			echo '<div class="notice notice-error is-dismissible"><p>' .
+				esc_html__( 'SouthPay returned a test-mode connection, but this gateway only operates in live mode. Nothing was saved. Please reconnect with a live SouthPay account.', 'southpay-gateway-for-woocommerce' ) .
+				'</p></div>';
 		}
 
 		if ( 'yes' !== $this->enabled ) {
@@ -216,7 +220,7 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 				'type'        => 'password',
 				'description' => sprintf(
 					/* translators: %s: URL to SouthPay dashboard */
-					__( 'Optional. Use "Connect with SouthPay" above, or paste a key from <a href="%s" target="_blank" rel="noopener noreferrer">your SouthPay dashboard</a> (starts with <code>sp_live_</code> or <code>sp_test_</code>).', 'southpay-gateway-for-woocommerce' ),
+					__( 'Optional. Use "Connect with SouthPay" above, or paste a live key from <a href="%s" target="_blank" rel="noopener noreferrer">your SouthPay dashboard</a> (starts with <code>sp_live_</code>). Test keys (<code>sp_test_</code>) are not accepted.', 'southpay-gateway-for-woocommerce' ),
 					esc_url( 'https://dashboard.southpay.io/settings/api-keys' )
 				),
 				'default'     => '',
@@ -465,8 +469,18 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 	public function process_admin_options() {
 		$result = parent::process_admin_options();
 
-		$this->api_key       = $this->get_option( 'api_key' );
+		$this->api_key        = $this->get_option( 'api_key' );
 		$this->webhook_secret = $this->get_option( 'webhook_secret' );
+
+		if ( 0 === strpos( (string) $this->api_key, 'sp_test_' ) ) {
+			$settings            = get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
+			$settings['api_key'] = '';
+			update_option( 'woocommerce_soutpaygw_gateway_settings', $settings );
+			$this->api_key = '';
+
+			WC_Admin_Settings::add_error( __( 'SouthPay only operates in live mode. The key you entered is a test key (sp_test_…) and was not saved. Paste a live key (sp_live_…) or use "Connect with SouthPay".', 'southpay-gateway-for-woocommerce' ) );
+			return $result;
+		}
 
 		if ( ! empty( $this->api_key ) && empty( $this->webhook_secret ) ) {
 			$this->register_webhook_endpoint();
@@ -973,6 +987,13 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			exit;
 		}
 
+		if ( array_key_exists( 'livemode', $body ) && ! filter_var( $body['livemode'], FILTER_VALIDATE_BOOLEAN ) ) {
+			$this->log_debug( 'handle_oauth_callback: refusing test-mode token' );
+			$this->revoke_token_value( ! empty( $body['refresh_token'] ) ? $body['refresh_token'] : ( $body['access_token'] ?? '' ) );
+			wp_safe_redirect( add_query_arg( 'soutpaygw_oauth', 'testmode', $settings_url ) );
+			exit;
+		}
+
 		$this->persist_token_response( $body );
 		$this->register_webhook_endpoint();
 
@@ -1098,22 +1119,7 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			wp_send_json_error( __( 'Permission denied.', 'southpay-gateway-for-woocommerce' ) );
 		}
 
-		$token_to_revoke = ! empty( $this->refresh_token ) ? $this->refresh_token : $this->api_key;
-
-		if ( ! empty( $token_to_revoke ) ) {
-			wp_remote_post(
-				trailingslashit( SOUTPAYGW_API_BASE ) . 'api/v2/oauth/revoke',
-				array(
-					'timeout' => 10,
-					'headers' => array(
-						'Authorization' => 'Bearer ' . $token_to_revoke,
-						'Content-Type'  => 'application/json',
-						'User-Agent'    => 'SouthPay-WooCommerce/' . SOUTPAYGW_VERSION,
-					),
-					'body' => '{}',
-				)
-			);
-		}
+		$this->revoke_token_value( ! empty( $this->refresh_token ) ? $this->refresh_token : $this->api_key );
 
 		$settings = get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
 		$settings['api_key']                 = '';
@@ -1127,5 +1133,24 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		delete_transient( 'soutpaygw_reconnect_required' );
 
 		wp_send_json_success( __( 'Disconnected successfully.', 'southpay-gateway-for-woocommerce' ) );
+	}
+
+	private function revoke_token_value( $token ) {
+		if ( empty( $token ) ) {
+			return;
+		}
+
+		wp_remote_post(
+			trailingslashit( SOUTPAYGW_API_BASE ) . 'api/v2/oauth/revoke',
+			array(
+				'timeout' => 10,
+				'headers' => array(
+					'Authorization' => 'Bearer ' . $token,
+					'Content-Type'  => 'application/json',
+					'User-Agent'    => 'SouthPay-WooCommerce/' . SOUTPAYGW_VERSION,
+				),
+				'body' => '{}',
+			)
+		);
 	}
 }

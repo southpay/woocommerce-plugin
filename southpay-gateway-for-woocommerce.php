@@ -3,7 +3,7 @@
  * @wordpress-plugin
  * Plugin Name:             SouthPay Crypto Payment Gateway
  * Description:             Accept cryptocurrency payments in WooCommerce via SouthPay's hosted checkout. One-click OAuth connect, automatic webhook registration, and on-chain confirmation that updates order status automatically.
- * Version:                 2.1.3
+ * Version:                 2.1.4
  * Author:                  SouthPay
  * Author URI:              https://southpay.io/
  * License:                 GPL-2.0-or-later
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SOUTPAYGW_VERSION', '2.1.3' );
+define( 'SOUTPAYGW_VERSION', '2.1.4' );
 define( 'SOUTPAYGW_PLUGIN_FILE', __FILE__ );
 define( 'SOUTPAYGW_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SOUTPAYGW_PLUGIN_URL', plugin_dir_url( __FILE__ ) );

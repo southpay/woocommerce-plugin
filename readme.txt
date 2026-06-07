@@ -4,7 +4,7 @@ Tags: woocommerce, crypto, cryptocurrency, bitcoin, payment gateway
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 2.1.3
+Stable tag: 2.1.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -138,6 +138,10 @@ Each webhook delivery is signed with HMAC-SHA256. The plugin verifies the signat
 Supported cryptocurrencies depend on your SouthPay account configuration. Contact SouthPay support for details.
 
 == Changelog ==
+
+= 2.1.4 =
+* Enforce live mode: refuse and revoke any OAuth token that comes back in test mode instead of silently connecting in test
+* Reject pasted test API keys (sp_test_) at save time so the gateway can never operate in test mode
 
 = 2.1.3 =
 * Fix oversized payment method logo on the classic (shortcode) checkout by constraining the icon height
