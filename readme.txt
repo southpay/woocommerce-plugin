@@ -4,7 +4,7 @@ Tags: woocommerce, crypto, cryptocurrency, bitcoin, payment gateway
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 2.1.4
+Stable tag: 2.1.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -138,6 +138,11 @@ Each webhook delivery is signed with HMAC-SHA256. The plugin verifies the signat
 Supported cryptocurrencies depend on your SouthPay account configuration. Contact SouthPay support for details.
 
 == Changelog ==
+
+= 2.1.5 =
+* Keep the store connected when a token refresh fails for a transient reason — only a definitive rejection from SouthPay now clears the connection and asks you to reconnect
+* Fix concurrent refreshes on busy stores racing each other, which could invalidate the connection and require a manual reconnect
+* Do not fail a request when a pre-emptive token refresh cannot run; the existing token is used instead
 
 = 2.1.4 =
 * Enforce live mode: refuse and revoke any OAuth token that comes back in test mode instead of silently connecting in test

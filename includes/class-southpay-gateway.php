@@ -831,7 +831,12 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 	private function api_request( $method, $endpoint, $data = null, $extra_headers = array(), $allow_refresh = true ) {
 		if ( $this->should_proactively_refresh() ) {
 			$refresh = $this->refresh_access_token();
-			if ( is_wp_error( $refresh ) ) {
+
+			// The current token has not expired yet — that is why this is the
+			// proactive path — so a failed pre-emptive refresh is no reason to
+			// fail the request. Carry on with what we have; if it really is
+			// spent the 401 handler below still gets a turn.
+			if ( is_wp_error( $refresh ) && $this->is_fatal_grant_error( $refresh ) ) {
 				return $refresh;
 			}
 		}
@@ -1023,7 +1028,15 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 
 		if ( $status !== 200 || empty( $body['access_token'] ) ) {
 			$error_code = is_array( $body ) && isset( $body['error'] ) ? sanitize_text_field( $body['error'] ) : 'unknown';
-			return new WP_Error( 'soutpaygw_token_error', sprintf( 'status=%d error=%s', $status, $error_code ) );
+
+			return new WP_Error(
+				'soutpaygw_token_error',
+				sprintf( 'status=%d error=%s', $status, $error_code ),
+				array(
+					'status'      => $status,
+					'oauth_error' => $error_code,
+				)
+			);
 		}
 
 		return $body;
@@ -1063,18 +1076,23 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		}
 
 		$lock_key = 'soutpaygw_refresh_lock';
-		if ( ! wp_cache_add( $lock_key, 1, '', 30 ) ) {
-			usleep( 250000 );
-			$settings = get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
-			if ( ! empty( $settings['api_key'] ) ) {
-				$this->api_key                 = $settings['api_key'];
-				$this->refresh_token           = $settings['refresh_token'] ?? '';
-				$this->access_token_expires_at = (int) ( $settings['access_token_expires_at'] ?? 0 );
+
+		if ( ! $this->acquire_refresh_lock( $lock_key ) ) {
+			if ( $this->await_concurrent_refresh() ) {
+				$this->log_debug( 'refresh_access_token: adopted token from concurrent refresh' );
 				return true;
 			}
+
+			$this->log_debug( 'refresh_access_token: refresh already in progress, backing off' );
+			return new WP_Error( 'soutpaygw_refresh_busy', __( 'A token refresh is already in progress.', 'southpay-gateway-for-woocommerce' ) );
 		}
 
 		try {
+			$settings = $this->reload_settings_from_db();
+			if ( ! empty( $settings['refresh_token'] ) ) {
+				$this->refresh_token = $settings['refresh_token'];
+			}
+
 			$body = $this->post_token_endpoint( array(
 				'grant_type'    => 'refresh_token',
 				'refresh_token' => $this->refresh_token,
@@ -1083,7 +1101,13 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 
 			if ( is_wp_error( $body ) ) {
 				$this->log_debug( 'refresh_access_token failed: ' . $body->get_error_message() );
-				$this->handle_refresh_failure();
+
+				if ( $this->is_fatal_grant_error( $body ) ) {
+					$this->handle_refresh_failure();
+				} else {
+					$this->log_debug( 'refresh_access_token: transient failure, credentials kept for retry' );
+				}
+
 				return $body;
 			}
 
@@ -1091,8 +1115,76 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			$this->log_debug( 'refresh_access_token: rotated successfully' );
 			return true;
 		} finally {
-			wp_cache_delete( $lock_key );
+			delete_option( $lock_key );
 		}
+	}
+
+	/**
+	 * Cross-process lock. wp_cache_add is per-request unless a persistent object
+	 * cache is installed, so on a plain WordPress install it never blocked
+	 * anything and two workers would refresh the same token concurrently.
+	 * add_option is backed by the unique index on option_name, so it holds
+	 * whether or not an object cache is present.
+	 */
+	private function acquire_refresh_lock( $lock_key, $timeout = 30 ) {
+		$held = get_option( $lock_key );
+
+		if ( false !== $held ) {
+			if ( ( time() - (int) $held ) < $timeout ) {
+				return false;
+			}
+			delete_option( $lock_key );
+		}
+
+		return add_option( $lock_key, (string) time(), '', 'no' );
+	}
+
+	/**
+	 * Wait for the worker holding the lock to publish its rotated token, then
+	 * adopt it. Never falls through to refreshing with the same token: that is
+	 * what the server reads as replay, and it used to revoke the whole grant.
+	 */
+	private function await_concurrent_refresh( $max_wait_ms = 5000 ) {
+		$previous = $this->api_key;
+		$waited   = 0;
+
+		while ( $waited < $max_wait_ms ) {
+			usleep( 250000 );
+			$waited += 250;
+
+			$settings = $this->reload_settings_from_db();
+
+			if ( ! empty( $settings['api_key'] ) && $settings['api_key'] !== $previous ) {
+				$this->api_key                 = $settings['api_key'];
+				$this->refresh_token           = $settings['refresh_token'] ?? '';
+				$this->access_token_expires_at = (int) ( $settings['access_token_expires_at'] ?? 0 );
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private function reload_settings_from_db() {
+		wp_cache_delete( 'woocommerce_soutpaygw_gateway_settings', 'options' );
+		wp_cache_delete( 'alloptions', 'options' );
+
+		return get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
+	}
+
+	/**
+	 * Only a definitive answer from the authorization server should cost the
+	 * merchant their credentials. A timeout or a 5xx is our problem, not theirs,
+	 * and wiping on those forced a manual reconnect after a momentary blip.
+	 */
+	private function is_fatal_grant_error( $error ) {
+		$data = is_wp_error( $error ) ? $error->get_error_data() : null;
+
+		if ( ! is_array( $data ) || empty( $data['oauth_error'] ) ) {
+			return false;
+		}
+
+		return in_array( $data['oauth_error'], array( 'invalid_grant', 'invalid_client' ), true );
 	}
 
 	private function handle_refresh_failure() {
