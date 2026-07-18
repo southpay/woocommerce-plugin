@@ -143,6 +143,7 @@ Supported cryptocurrencies depend on your SouthPay account configuration. Contac
 * Keep the store connected when a token refresh fails for a transient reason — only a definitive rejection from SouthPay now clears the connection and asks you to reconnect
 * Fix concurrent refreshes on busy stores racing each other, which could invalidate the connection and require a manual reconnect
 * Do not fail a request when a pre-emptive token refresh cannot run; the existing token is used instead
+* Clear the "session expired — reconnect your account" notice as soon as the connection recovers, instead of leaving it up for a day above a store that is connected and working
 
 = 2.1.4 =
 * Enforce live mode: refuse and revoke any OAuth token that comes back in test mode instead of silently connecting in test

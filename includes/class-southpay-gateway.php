@@ -124,7 +124,17 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 	}
 
 	public function admin_notices() {
-		if ( get_transient( 'soutpaygw_reconnect_required' ) ) {
+		$reconnect_required = get_transient( 'soutpaygw_reconnect_required' );
+
+		// Credentials in hand mean the notice has outlived whatever set it —
+		// a genuinely dead grant is cleared by handle_refresh_failure(), which
+		// empties these. Never contradict the connection status shown below.
+		if ( $reconnect_required && ! empty( $this->api_key ) && ! empty( $this->refresh_token ) ) {
+			delete_transient( 'soutpaygw_reconnect_required' );
+			$reconnect_required = false;
+		}
+
+		if ( $reconnect_required ) {
 			$settings_url = admin_url( 'admin.php?page=wc-settings&tab=checkout&section=soutpaygw_gateway' );
 			printf(
 				'<div class="notice notice-error"><p>%s</p></div>',
@@ -1061,6 +1071,13 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			$settings['webhook_endpoint_id'] = '';
 		}
 		update_option( 'woocommerce_soutpaygw_gateway_settings', $settings );
+
+		// Holding a freshly issued token is proof the connection works, so any
+		// outstanding "reconnect required" notice is stale. It used to be
+		// cleared only by landing on the OAuth redirect, which left merchants
+		// staring at a session-expired banner above a healthy connection for
+		// the transient's full day.
+		delete_transient( 'soutpaygw_reconnect_required' );
 
 		$this->api_key                 = $access_token;
 		$this->refresh_token           = $refresh_token;
