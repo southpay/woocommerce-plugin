@@ -4,7 +4,7 @@ Tags: woocommerce, crypto, cryptocurrency, bitcoin, payment gateway
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.1.6
+Stable tag: 2.1.7
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -138,6 +138,9 @@ Each webhook delivery is signed with HMAC-SHA256. The plugin verifies the signat
 Supported cryptocurrencies depend on your SouthPay account configuration. Contact SouthPay support for details.
 
 == Changelog ==
+
+= 2.1.7 =
+* Fix "Test connection" failing with "Insufficient scope: payments:read required" on OAuth-connected stores; the check now uses an endpoint covered by the scopes the plugin actually requests
 
 = 2.1.6 =
 * Declare compatibility with WordPress 7.0

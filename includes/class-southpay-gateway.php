@@ -797,7 +797,8 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			wp_send_json_error( __( 'Permission denied.', 'southpay-gateway-for-woocommerce' ) );
 		}
 
-		$response = $this->api_request( 'GET', '/api/v2/payments' );
+		$endpoint = $this->is_oauth_token() ? '/api/v2/oauth/userinfo' : '/api/v2/payments';
+		$response = $this->api_request( 'GET', $endpoint );
 
 		if ( is_wp_error( $response ) ) {
 			wp_send_json_error(
