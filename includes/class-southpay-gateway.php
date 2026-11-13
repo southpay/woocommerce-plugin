@@ -8,15 +8,23 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 
 	const SUPPORTED_CURRENCIES = array( 'AUD', 'BRL', 'EUR', 'GBP', 'NGN', 'RUB', 'TRY', 'UAH', 'USD', 'USDT', 'USDC' );
 
-	private $api_key;
+	const CONNECTION_OPTION = 'soutpaygw_connection';
+
+	const REFRESH_LOCK_OPTION = 'soutpaygw_refresh_lock';
+
+	const OAUTH_CALLBACK = 'southpay';
+
+	const LEGACY_SETTINGS = array( 'api_key', 'refresh_token', 'access_token_expires_at', 'webhook_secret', 'webhook_endpoint_id', 'oauth_store_id' );
+
+	private $connection;
+
+	private $access_token;
 
 	private $refresh_token;
 
 	private $access_token_expires_at;
 
 	private $webhook_secret;
-
-	private $oauth_store_id;
 
 	private $show_icon;
 
@@ -42,24 +50,20 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		$this->title            = $this->get_option( 'title' );
 		$this->description      = $this->get_option( 'description' );
 		$this->show_icon        = 'yes' === $this->get_option( 'show_icon', 'yes' );
-		$this->api_key                 = $this->get_option( 'api_key' );
-		$this->refresh_token           = $this->get_option( 'refresh_token' );
-		$this->access_token_expires_at = (int) $this->get_option( 'access_token_expires_at', '0' );
-		$this->webhook_secret          = $this->get_option( 'webhook_secret' );
-		$this->oauth_store_id          = $this->get_option( 'oauth_store_id' );
 		$this->invoice_prefix   = $this->get_option( 'invoice_prefix', 'WC-' );
 		$this->min_order_amount = (float) $this->get_option( 'min_order_amount', '1' );
 		$this->debug_mode       = 'yes' === $this->get_option( 'debug_mode' );
 		$this->log              = wc_get_logger();
 
+		$this->load_connection( get_option( self::CONNECTION_OPTION, array() ) );
+
 		add_action( 'woocommerce_update_options_payment_gateways_' . $this->id, array( $this, 'process_admin_options' ) );
 		add_action( 'woocommerce_api_wc_gateway_soutpaygw', array( $this, 'handle_webhook' ) );
-		add_action( 'woocommerce_api_wc_gateway_soutpaygw_oauth', array( $this, 'handle_oauth_callback' ) );
+		add_action( 'woocommerce_api_' . self::OAUTH_CALLBACK, array( $this, 'handle_oauth_callback' ) );
 		add_action( 'woocommerce_thankyou_' . $this->id, array( $this, 'thankyou_page' ) );
 		add_action( 'admin_notices', array( $this, 'admin_notices' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'admin_enqueue_scripts' ) );
 		add_action( 'wp_ajax_soutpaygw_test_connection', array( $this, 'ajax_test_connection' ) );
-		add_action( 'wp_ajax_soutpaygw_reconnect_webhook', array( $this, 'ajax_reconnect_webhook' ) );
 		add_action( 'wp_ajax_soutpaygw_init_oauth', array( $this, 'ajax_init_oauth_flow' ) );
 		add_action( 'wp_ajax_soutpaygw_disconnect_oauth', array( $this, 'ajax_disconnect_oauth' ) );
 	}
@@ -95,13 +99,13 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			return false;
 		}
 
-		if ( empty( $this->api_key ) ) {
-			$this->log_debug( 'is_available: false — api_key is empty' );
+		if ( ! $this->is_connected() ) {
+			$this->log_debug( 'is_available: false — not connected to SouthPay' );
 			return false;
 		}
 
-		if ( empty( $this->webhook_secret ) ) {
-			$this->log_debug( 'is_available: false — webhook_secret is empty' );
+		if ( ! $this->can_take_payments() ) {
+			$this->log_debug( 'is_available: false — this connection cannot take payments yet' );
 			return false;
 		}
 
@@ -126,10 +130,7 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 	public function admin_notices() {
 		$reconnect_required = get_transient( 'soutpaygw_reconnect_required' );
 
-		// Credentials in hand mean the notice has outlived whatever set it —
-		// a genuinely dead grant is cleared by handle_refresh_failure(), which
-		// empties these. Never contradict the connection status shown below.
-		if ( $reconnect_required && ! empty( $this->api_key ) && ! empty( $this->refresh_token ) ) {
+		if ( $reconnect_required && $this->is_connected() ) {
 			delete_transient( 'soutpaygw_reconnect_required' );
 			$reconnect_required = false;
 		}
@@ -141,7 +142,7 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 				wp_kses(
 					sprintf(
 						/* translators: %s: link to SouthPay settings page */
-						__( 'SouthPay session expired and could not be refreshed. <a href="%s">Reconnect your account</a> to resume accepting payments.', 'southpay-gateway-for-woocommerce' ),
+						__( 'This site is no longer connected to SouthPay. <a href="%s">Connect it again</a> to keep using SouthPay here.', 'southpay-gateway-for-woocommerce' ),
 						esc_url( $settings_url )
 					),
 					array( 'a' => array( 'href' => array() ) )
@@ -149,12 +150,11 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			);
 		}
 
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only URL param set by this plugin's own OAuth redirect; no form processing occurs.
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		$oauth_status = isset( $_GET['soutpaygw_oauth'] ) ? sanitize_text_field( wp_unslash( $_GET['soutpaygw_oauth'] ) ) : '';
-		if ( 'connected' === $oauth_status ) {
-			delete_transient( 'soutpaygw_reconnect_required' );
+		if ( 'connected' === $oauth_status && $this->is_connected() ) {
 			echo '<div class="notice notice-success is-dismissible"><p>' .
-				esc_html__( 'SouthPay connected successfully! Your store is ready to accept crypto payments.', 'southpay-gateway-for-woocommerce' ) .
+				esc_html__( 'This site is now connected to your SouthPay store.', 'southpay-gateway-for-woocommerce' ) .
 				'</p></div>';
 		} elseif ( 'denied' === $oauth_status ) {
 			echo '<div class="notice notice-warning is-dismissible"><p>' .
@@ -164,17 +164,13 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			echo '<div class="notice notice-error is-dismissible"><p>' .
 				esc_html__( 'SouthPay connection failed. Please try again.', 'southpay-gateway-for-woocommerce' ) .
 				'</p></div>';
-		} elseif ( 'testmode' === $oauth_status ) {
-			echo '<div class="notice notice-error is-dismissible"><p>' .
-				esc_html__( 'SouthPay returned a test-mode connection, but this gateway only operates in live mode. Nothing was saved. Please reconnect with a live SouthPay account.', 'southpay-gateway-for-woocommerce' ) .
-				'</p></div>';
 		}
 
 		if ( 'yes' !== $this->enabled ) {
 			return;
 		}
 
-		if ( empty( $this->api_key ) ) {
+		if ( ! $this->is_connected() ) {
 			$settings_url = admin_url( 'admin.php?page=wc-settings&tab=checkout&section=soutpaygw_gateway' );
 			printf(
 				'<div class="notice notice-error"><p>%s</p></div>',
@@ -223,17 +219,6 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			'connection_status' => array(
 				'title' => __( 'Status', 'southpay-gateway-for-woocommerce' ),
 				'type'  => 'connection_status',
-			),
-
-			'api_key' => array(
-				'title'       => __( 'API Key', 'southpay-gateway-for-woocommerce' ),
-				'type'        => 'password',
-				'description' => sprintf(
-					/* translators: %s: URL to SouthPay dashboard */
-					__( 'Optional. Use "Connect with SouthPay" above, or paste a live key from <a href="%s" target="_blank" rel="noopener noreferrer">your SouthPay dashboard</a> (starts with <code>sp_live_</code>). Test keys (<code>sp_test_</code>) are not accepted.', 'southpay-gateway-for-woocommerce' ),
-					esc_url( 'https://dashboard.southpay.io/settings/api-keys' )
-				),
-				'default'     => '',
 			),
 
 			'section_appearance' => array(
@@ -300,37 +285,13 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 				'default'     => 'no',
 				'desc_tip'    => true,
 			),
-
-			'webhook_secret'           => array(
-				'type'    => 'hidden',
-				'default' => '',
-			),
-			'webhook_endpoint_id'      => array(
-				'type'    => 'hidden',
-				'default' => '',
-			),
-			'oauth_store_id'           => array(
-				'type'    => 'hidden',
-				'default' => '',
-			),
-			'refresh_token'            => array(
-				'type'    => 'hidden',
-				'default' => '',
-			),
-			'access_token_expires_at'  => array(
-				'type'    => 'hidden',
-				'default' => '0',
-			),
 		);
 	}
 
 	public function generate_connection_status_html( $key, $data ) {
-		$has_key      = ! empty( $this->api_key );
-		$has_secret   = ! empty( $this->webhook_secret );
-		$is_oauth     = $has_key && strpos( $this->api_key, 'spo_' ) === 0;
-		$is_connected = $has_key && $has_secret;
+		$is_connected = $this->is_connected();
+		$store_name   = (string) ( $this->connection['store_name'] ?? '' );
 		$nonce        = wp_create_nonce( 'soutpaygw_admin' );
-		$webhook_url  = add_query_arg( 'wc-api', 'wc_gateway_soutpaygw', trailingslashit( home_url() ) );
 
 		ob_start();
 		?>
@@ -345,9 +306,13 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 						<div class="soutpaygw-status soutpaygw-status--connected">
 							<span class="soutpaygw-status-dot"></span>
 							<span class="soutpaygw-status-label">
-								<?php echo $is_oauth
-									? esc_html__( 'Connected via SouthPay', 'southpay-gateway-for-woocommerce' )
-									: esc_html__( 'Connected to SouthPay', 'southpay-gateway-for-woocommerce' );
+								<?php
+								if ( '' !== $store_name ) {
+									/* translators: %s: name of the connected SouthPay store */
+									echo esc_html( sprintf( __( 'Connected to %s', 'southpay-gateway-for-woocommerce' ), $store_name ) );
+								} else {
+									esc_html_e( 'Connected to SouthPay', 'southpay-gateway-for-woocommerce' );
+								}
 								?>
 							</span>
 						</div>
@@ -355,35 +320,15 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 							<button type="button" class="button button-secondary" id="soutpaygw-test-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
 								<?php esc_html_e( 'Test connection', 'southpay-gateway-for-woocommerce' ); ?>
 							</button>
-							<button type="button" class="button button-link" id="soutpaygw-reconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
-								<?php esc_html_e( 'Reconnect webhook', 'southpay-gateway-for-woocommerce' ); ?>
-							</button>
-							<?php if ( $is_oauth ) : ?>
-								<button type="button" class="button button-link soutpaygw-disconnect-link" id="soutpaygw-disconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
-									<?php esc_html_e( 'Disconnect', 'southpay-gateway-for-woocommerce' ); ?>
-								</button>
-							<?php endif; ?>
-						</div>
-
-					<?php elseif ( $is_oauth && $has_key ) : ?>
-						<div class="soutpaygw-status soutpaygw-status--warning">
-							<span class="soutpaygw-status-dot"></span>
-							<span class="soutpaygw-status-label"><?php esc_html_e( 'Connected — webhook setup incomplete', 'southpay-gateway-for-woocommerce' ); ?></span>
-						</div>
-						<div class="soutpaygw-actions">
-							<button type="button" class="button button-primary" id="soutpaygw-reconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
-								<?php esc_html_e( 'Reconnect webhook', 'southpay-gateway-for-woocommerce' ); ?>
-							</button>
 							<button type="button" class="button button-link soutpaygw-disconnect-link" id="soutpaygw-disconnect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
 								<?php esc_html_e( 'Disconnect', 'southpay-gateway-for-woocommerce' ); ?>
 							</button>
 						</div>
-
-					<?php elseif ( $has_key ) : ?>
-						<div class="soutpaygw-status soutpaygw-status--warning">
-							<span class="soutpaygw-status-dot"></span>
-							<span class="soutpaygw-status-label"><?php esc_html_e( 'API key saved — save settings to finish connecting', 'southpay-gateway-for-woocommerce' ); ?></span>
-						</div>
+						<?php if ( ! $this->can_take_payments() ) : ?>
+							<p class="soutpaygw-hint">
+								<?php esc_html_e( 'Your store is linked to SouthPay. Taking payments at checkout through this connection is not available yet, so SouthPay stays hidden from your customers for now.', 'southpay-gateway-for-woocommerce' ); ?>
+							</p>
+						<?php endif; ?>
 
 					<?php else : ?>
 						<div class="soutpaygw-status soutpaygw-status--disconnected">
@@ -395,19 +340,18 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 								<?php esc_html_e( 'Connect with SouthPay', 'southpay-gateway-for-woocommerce' ); ?>
 							</button>
 							<p class="soutpaygw-hint">
-								<?php esc_html_e( 'One click — sign in to your SouthPay account and your store is set up automatically. Or enter an API key below instead.', 'southpay-gateway-for-woocommerce' ); ?>
+								<?php
+								if ( $this->has_legacy_credentials() ) {
+									esc_html_e( 'This store was connected to the previous SouthPay platform, which has been retired. Connect again to link it to your SouthPay account.', 'southpay-gateway-for-woocommerce' );
+								} else {
+									esc_html_e( 'Sign in to SouthPay, choose the store to link and approve. Only owners and admins of a SouthPay business can connect.', 'southpay-gateway-for-woocommerce' );
+								}
+								?>
 							</p>
 						</div>
 					<?php endif; ?>
 
 					<p id="soutpaygw-status-msg"></p>
-
-					<?php if ( $is_connected ) : ?>
-						<div class="soutpaygw-webhook-row">
-							<span><?php esc_html_e( 'Webhook URL:', 'southpay-gateway-for-woocommerce' ); ?></span>
-							<input type="text" value="<?php echo esc_attr( $webhook_url ); ?>" readonly onclick="this.select()" />
-						</div>
-					<?php endif; ?>
 
 				</div>
 			</td>
@@ -422,11 +366,11 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 						if (r && r.success && r.data && r.data.url) {
 							window.location.assign(r.data.url);
 						} else {
-							$msg.text((r && r.data) || '<?php echo esc_js( __( 'Could not start OAuth flow. Please try again.', 'southpay-gateway-for-woocommerce' ) ); ?>').css('color','#d63638');
+							$msg.text((r && r.data) || '<?php echo esc_js( __( 'Could not start connecting. Please try again.', 'southpay-gateway-for-woocommerce' ) ); ?>').css('color','#d63638');
 							$btn.prop('disabled', false).text('<?php echo esc_js( __( 'Connect with SouthPay', 'southpay-gateway-for-woocommerce' ) ); ?>');
 						}
 					})
-					.fail(function(xhr, status, error){
+					.fail(function(xhr){
 						$msg.text('<?php echo esc_js( __( 'Request failed (', 'southpay-gateway-for-woocommerce' ) ); ?>' + xhr.status + '). <?php echo esc_js( __( 'Check browser console for details.', 'southpay-gateway-for-woocommerce' ) ); ?>').css('color','#d63638');
 						$btn.prop('disabled', false).text('<?php echo esc_js( __( 'Connect with SouthPay', 'southpay-gateway-for-woocommerce' ) ); ?>');
 					});
@@ -441,19 +385,8 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 				});
 			});
 
-			$('#soutpaygw-reconnect-btn').on('click', function(){
-				if (!confirm('<?php echo esc_js( __( 'This will create a new webhook endpoint and replace the current one. Continue?', 'southpay-gateway-for-woocommerce' ) ); ?>')) return;
-				var $btn = $(this), $msg = $('#soutpaygw-status-msg');
-				$btn.prop('disabled', true);
-				$.post(ajaxurl, { action: 'soutpaygw_reconnect_webhook', nonce: $btn.data('nonce') }, function(r){
-					$msg.text(r.data).css('color', r.success ? '#00a32a' : '#d63638');
-					if (r.success) location.reload();
-					else $btn.prop('disabled', false);
-				});
-			});
-
 			$('#soutpaygw-disconnect-btn').on('click', function(){
-				if (!confirm('<?php echo esc_js( __( 'Disconnect your SouthPay account? You will need to reconnect to continue accepting payments.', 'southpay-gateway-for-woocommerce' ) ); ?>')) return;
+				if (!confirm('<?php echo esc_js( __( 'Disconnect this site from your SouthPay store? You will need to connect again to use SouthPay here.', 'southpay-gateway-for-woocommerce' ) ); ?>')) return;
 				var $btn = $(this), $msg = $('#soutpaygw-status-msg');
 				$btn.prop('disabled', true);
 				$.post(ajaxurl, { action: 'soutpaygw_disconnect_oauth', nonce: $btn.data('nonce') }, function(r){
@@ -470,37 +403,13 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		return ob_get_clean();
 	}
 
-	public function generate_hidden_html( $key, $data ) {
-		$field_key = $this->get_field_key( $key );
-		$value     = $this->get_option( $key, isset( $data['default'] ) ? $data['default'] : '' );
-		return '<input type="hidden" name="' . esc_attr( $field_key ) . '" value="' . esc_attr( $value ) . '" />';
-	}
-
-	public function process_admin_options() {
-		$result = parent::process_admin_options();
-
-		$this->api_key        = $this->get_option( 'api_key' );
-		$this->webhook_secret = $this->get_option( 'webhook_secret' );
-
-		if ( 0 === strpos( (string) $this->api_key, 'sp_test_' ) ) {
-			$settings            = get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
-			$settings['api_key'] = '';
-			update_option( 'woocommerce_soutpaygw_gateway_settings', $settings );
-			$this->api_key = '';
-
-			WC_Admin_Settings::add_error( __( 'SouthPay only operates in live mode. The key you entered is a test key (sp_test_…) and was not saved. Paste a live key (sp_live_…) or use "Connect with SouthPay".', 'southpay-gateway-for-woocommerce' ) );
-			return $result;
-		}
-
-		if ( ! empty( $this->api_key ) && empty( $this->webhook_secret ) ) {
-			$this->register_webhook_endpoint();
-		}
-
-		return $result;
-	}
-
 	public function process_payment( $order_id ) {
 		$order = wc_get_order( $order_id );
+
+		if ( ! $this->can_take_payments() ) {
+			wc_add_notice( esc_html__( 'Payment could not be started. Please choose another payment method.', 'southpay-gateway-for-woocommerce' ), 'error' );
+			return array( 'result' => 'failure' );
+		}
 
 		$line_items = array();
 		$image_url  = '';
@@ -709,87 +618,6 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			'</div>';
 	}
 
-	private function register_webhook_endpoint( $force = false ) {
-		$webhook_url = add_query_arg( 'wc-api', 'wc_gateway_soutpaygw', trailingslashit( home_url() ) );
-		$this->log_debug( 'register_webhook_endpoint: url=' . $webhook_url . ' force=' . ( $force ? 'yes' : 'no' ) . ' api_key_prefix=' . substr( $this->api_key, 0, 12 ) );
-
-		$response = $this->api_request( 'POST', '/api/v2/webhook_endpoints', array(
-			'webhook_endpoint' => array(
-				'platform'           => 'woocommerce',
-				'platform_store_url' => home_url(),
-				'url'                => $webhook_url,
-			),
-		) );
-
-		if ( is_wp_error( $response ) ) {
-			$this->log_debug( 'register_webhook_endpoint error: ' . $response->get_error_message() . ' code=' . $response->get_error_code() );
-
-			if ( 'soutpaygw_api_conflict' === $response->get_error_code() || $force ) {
-				$this->fetch_and_rotate_webhook_secret( $webhook_url );
-			}
-			return;
-		}
-
-		$this->log_debug( 'register_webhook_endpoint: created — id=' . ( $response['id'] ?? 'n/a' ) . ' has_secret=' . ( ! empty( $response['signing_secret'] ) ? 'yes' : 'no' ) );
-
-		if ( ! empty( $response['signing_secret'] ) && ! empty( $response['id'] ) ) {
-			$this->persist_webhook_credentials( $response['id'], $response['signing_secret'] );
-		}
-	}
-
-	private function fetch_and_rotate_webhook_secret( $webhook_url ) {
-		$this->log_debug( 'fetch_and_rotate_webhook_secret: fetching endpoint list' );
-		$list = $this->api_request( 'GET', '/api/v2/webhook_endpoints' );
-
-		if ( is_wp_error( $list ) ) {
-			$this->log_debug( 'fetch_and_rotate_webhook_secret: list request failed — ' . $list->get_error_message() );
-			return;
-		}
-
-		if ( ! is_array( $list ) ) {
-			$this->log_debug( 'fetch_and_rotate_webhook_secret: unexpected response type: ' . gettype( $list ) . ' value=' . wp_json_encode( $list ) );
-			return;
-		}
-
-		$this->log_debug( 'fetch_and_rotate_webhook_secret: got ' . count( $list ) . ' endpoints' );
-
-		foreach ( $list as $i => $endpoint ) {
-			$platform = isset( $endpoint['platform'] ) ? $endpoint['platform'] : '(none)';
-			$ep_id    = isset( $endpoint['id'] ) ? $endpoint['id'] : '(none)';
-			$ep_url   = isset( $endpoint['url'] ) ? $endpoint['url'] : '(none)';
-			$this->log_debug( 'fetch_and_rotate_webhook_secret: endpoint[' . $i . '] id=' . $ep_id . ' platform=' . $platform . ' url=' . $ep_url );
-
-			if ( 'woocommerce' !== $platform || empty( $ep_id ) ) {
-				continue;
-			}
-
-			$endpoint_id = sanitize_text_field( $ep_id );
-			$this->log_debug( 'fetch_and_rotate_webhook_secret: rotating secret for endpoint ' . $endpoint_id );
-			$rotate = $this->api_request( 'POST', '/api/v2/webhook_endpoints/' . $endpoint_id . '/rotate_secret' );
-
-			if ( is_wp_error( $rotate ) ) {
-				$this->log_debug( 'fetch_and_rotate_webhook_secret: rotate request failed — ' . $rotate->get_error_message() );
-			} elseif ( empty( $rotate['signing_secret'] ) ) {
-				$this->log_debug( 'fetch_and_rotate_webhook_secret: rotate response missing signing_secret — ' . wp_json_encode( $rotate ) );
-			} else {
-				$this->persist_webhook_credentials( $endpoint_id, $rotate['signing_secret'] );
-				$this->log_debug( 'fetch_and_rotate_webhook_secret: success — webhook_secret saved' );
-			}
-			return;
-		}
-
-		$this->log_debug( 'fetch_and_rotate_webhook_secret: no woocommerce endpoint found among ' . count( $list ) . ' endpoints' );
-	}
-
-	private function persist_webhook_credentials( $endpoint_id, $signing_secret ) {
-		$this->log_debug( 'persist_webhook_credentials: saving endpoint_id=' . $endpoint_id );
-		$settings                        = get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
-		$settings['webhook_secret']      = $signing_secret;
-		$settings['webhook_endpoint_id'] = $endpoint_id;
-		update_option( 'woocommerce_soutpaygw_gateway_settings', $settings );
-		$this->webhook_secret = $signing_secret;
-	}
-
 	public function ajax_test_connection() {
 		check_ajax_referer( 'soutpaygw_admin', 'nonce' );
 
@@ -797,8 +625,7 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			wp_send_json_error( __( 'Permission denied.', 'southpay-gateway-for-woocommerce' ) );
 		}
 
-		$endpoint = $this->is_oauth_token() ? '/api/v2/oauth/userinfo' : '/api/v2/payments';
-		$response = $this->api_request( 'GET', $endpoint );
+		$response = $this->api_request( 'GET', '/api/v1/connection' );
 
 		if ( is_wp_error( $response ) ) {
 			wp_send_json_error(
@@ -810,43 +637,25 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			);
 		}
 
-		wp_send_json_success( __( 'Connection successful!', 'southpay-gateway-for-woocommerce' ) );
-	}
+		$store_name = isset( $response['store']['name'] ) ? sanitize_text_field( $response['store']['name'] ) : '';
 
-	public function ajax_reconnect_webhook() {
-		check_ajax_referer( 'soutpaygw_admin', 'nonce' );
-
-		if ( ! current_user_can( 'manage_woocommerce' ) ) {
-			wp_send_json_error( __( 'Permission denied.', 'southpay-gateway-for-woocommerce' ) );
+		if ( '' === $store_name ) {
+			wp_send_json_success( __( 'Connection successful!', 'southpay-gateway-for-woocommerce' ) );
 		}
 
-		$this->log_debug( 'ajax_reconnect_webhook: starting — api_key_prefix=' . substr( $this->api_key, 0, 12 ) );
-
-		$settings = get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
-		$settings['webhook_secret']      = '';
-		$settings['webhook_endpoint_id'] = '';
-		update_option( 'woocommerce_soutpaygw_gateway_settings', $settings );
-		$this->webhook_secret = '';
-
-		$this->register_webhook_endpoint( true );
-
-		if ( ! empty( $this->webhook_secret ) ) {
-			$this->log_debug( 'ajax_reconnect_webhook: success' );
-			wp_send_json_success( __( 'Webhook reconnected successfully.', 'southpay-gateway-for-woocommerce' ) );
-		} else {
-			$this->log_debug( 'ajax_reconnect_webhook: failed — webhook_secret still empty after registration attempt' );
-			wp_send_json_error( __( 'Could not reconnect. Check your API key and try again.', 'southpay-gateway-for-woocommerce' ) );
-		}
+		wp_send_json_success(
+			sprintf(
+				/* translators: %s: name of the connected SouthPay store */
+				__( 'Connection successful! This site is linked to %s.', 'southpay-gateway-for-woocommerce' ),
+				$store_name
+			)
+		);
 	}
 
 	private function api_request( $method, $endpoint, $data = null, $extra_headers = array(), $allow_refresh = true ) {
 		if ( $this->should_proactively_refresh() ) {
 			$refresh = $this->refresh_access_token();
 
-			// The current token has not expired yet — that is why this is the
-			// proactive path — so a failed pre-emptive refresh is no reason to
-			// fail the request. Carry on with what we have; if it really is
-			// spent the 401 handler below still gets a turn.
 			if ( is_wp_error( $refresh ) && $this->is_fatal_grant_error( $refresh ) ) {
 				return $refresh;
 			}
@@ -859,9 +668,9 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			'headers' => array_merge(
 				array(
 					'Content-Type'  => 'application/json',
-					'Authorization' => 'Bearer ' . $this->api_key,
+					'Accept'        => 'application/json',
+					'Authorization' => 'Bearer ' . $this->access_token,
 					'User-Agent'    => 'SouthPay-WooCommerce/' . SOUTPAYGW_VERSION,
-					'X-Livemode'    => 'true',
 				),
 				$extra_headers
 			),
@@ -884,7 +693,7 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 
 		$this->log_debug( sprintf( '%s %s → %d', $method, $endpoint, $status_code ) );
 
-		if ( 401 === $status_code && $allow_refresh && ! empty( $this->refresh_token ) && $this->is_oauth_token() ) {
+		if ( 401 === $status_code && $allow_refresh && '' !== $this->refresh_token ) {
 			$refresh = $this->refresh_access_token();
 			if ( ! is_wp_error( $refresh ) ) {
 				return $this->api_request( $method, $endpoint, $data, $extra_headers, false );
@@ -893,28 +702,38 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 
 		if ( $status_code >= 400 ) {
 			$this->log_debug( sprintf( 'api_request body: %s', $body ) );
-		}
 
-		if ( 409 === $status_code ) {
-			return new WP_Error( 'soutpaygw_api_conflict', __( 'A webhook endpoint already exists for this store.', 'southpay-gateway-for-woocommerce' ) );
-		}
-
-		if ( $status_code >= 400 ) {
 			$message = isset( $decoded['error']['message'] )
 				? $decoded['error']['message']
 				: ( isset( $decoded['error_description'] ) ? $decoded['error_description'] : __( 'An error occurred. Please try again.', 'southpay-gateway-for-woocommerce' ) );
-			return new WP_Error( 'soutpaygw_api_error', $message );
+
+			return new WP_Error(
+				'soutpaygw_api_error',
+				sanitize_text_field( $message ),
+				array(
+					'status' => $status_code,
+					'code'   => isset( $decoded['error']['code'] ) ? sanitize_text_field( $decoded['error']['code'] ) : '',
+				)
+			);
 		}
 
 		return $decoded;
 	}
 
-	private function is_oauth_token() {
-		return ! empty( $this->api_key ) && strpos( $this->api_key, 'spo_' ) === 0;
+	private function is_connected() {
+		return '' !== $this->access_token && '' !== $this->refresh_token;
+	}
+
+	private function can_take_payments() {
+		return $this->is_connected() && '' !== $this->webhook_secret;
+	}
+
+	private function has_legacy_credentials() {
+		return ! $this->is_connected() && '' !== (string) $this->get_option( 'api_key', '' );
 	}
 
 	private function should_proactively_refresh() {
-		if ( empty( $this->refresh_token ) || $this->access_token_expires_at <= 0 ) {
+		if ( '' === $this->refresh_token || $this->access_token_expires_at <= 0 ) {
 			return false;
 		}
 		return ( $this->access_token_expires_at - time() ) < 60;
@@ -926,6 +745,10 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		}
 	}
 
+	private function oauth_callback_url() {
+		return add_query_arg( 'wc-api', self::OAUTH_CALLBACK, trailingslashit( home_url() ) );
+	}
+
 	public function ajax_init_oauth_flow() {
 		check_ajax_referer( 'soutpaygw_admin', 'nonce' );
 
@@ -933,52 +756,58 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			wp_send_json_error( __( 'Permission denied.', 'southpay-gateway-for-woocommerce' ) );
 		}
 
-		$code_verifier  = bin2hex( random_bytes( 64 ) );
+		$code_verifier  = bin2hex( random_bytes( 48 ) );
 		$code_challenge = rtrim( strtr( base64_encode( hash( 'sha256', $code_verifier, true ) ), '+/', '-_' ), '=' );
 
-		$state = wp_generate_password( 24, false );
+		$state = wp_generate_password( 32, false );
 
 		set_transient( 'soutpaygw_pkce_verifier', $code_verifier, 600 );
 		set_transient( 'soutpaygw_oauth_state', $state, 600 );
 
-		$callback_url = add_query_arg( 'wc-api', 'wc_gateway_soutpaygw_oauth', trailingslashit( home_url() ) );
-
-		$authorize_url = trailingslashit( SOUTPAYGW_DASHBOARD_BASE ) . 'oauth/authorize?' . http_build_query( array(
-			'client_id'             => SOUTPAYGW_OAUTH_CLIENT_ID,
-			'response_type'         => 'code',
-			'redirect_uri'          => $callback_url,
-			'scope'                 => SOUTPAYGW_OAUTH_SCOPES,
-			'code_challenge'        => $code_challenge,
-			'code_challenge_method' => 'S256',
-			'state'                 => $state,
-			'livemode'              => 'true',
-		) );
+		$authorize_url = trailingslashit( SOUTPAYGW_DASHBOARD_BASE ) . 'connect/authorize?' . http_build_query(
+			array(
+				'client_id'             => SOUTPAYGW_OAUTH_CLIENT_ID,
+				'response_type'         => 'code',
+				'redirect_uri'          => $this->oauth_callback_url(),
+				'scope'                 => SOUTPAYGW_OAUTH_SCOPES,
+				'code_challenge'        => $code_challenge,
+				'code_challenge_method' => 'S256',
+				'state'                 => $state,
+			)
+		);
 
 		wp_send_json_success( array( 'url' => $authorize_url ) );
 	}
 
 	public function handle_oauth_callback() {
-		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- OAuth callback; CSRF is handled by the state/PKCE verifier checked below.
-		$state    = isset( $_GET['state'] ) ? sanitize_text_field( wp_unslash( $_GET['state'] ) ) : '';
-		$code     = isset( $_GET['code'] ) ? sanitize_text_field( wp_unslash( $_GET['code'] ) ) : '';
-		$error    = isset( $_GET['error'] ) ? sanitize_text_field( wp_unslash( $_GET['error'] ) ) : '';
-		// phpcs:enable WordPress.Security.NonceVerification.Recommended
 		$settings_url = admin_url( 'admin.php?page=wc-settings&tab=checkout&section=soutpaygw_gateway' );
 
-		if ( $error ) {
-			wp_safe_redirect( add_query_arg( 'soutpaygw_oauth', 'denied', $settings_url ) );
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_safe_redirect( add_query_arg( 'soutpaygw_oauth', 'error', $settings_url ) );
 			exit;
 		}
 
-		$saved_state    = get_transient( 'soutpaygw_oauth_state' );
-		$code_verifier  = get_transient( 'soutpaygw_pkce_verifier' );
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended
+		$state = isset( $_GET['state'] ) ? sanitize_text_field( wp_unslash( $_GET['state'] ) ) : '';
+		$code  = isset( $_GET['code'] ) ? sanitize_text_field( wp_unslash( $_GET['code'] ) ) : '';
+		$error = isset( $_GET['error'] ) ? sanitize_text_field( wp_unslash( $_GET['error'] ) ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
+
+		$saved_state   = get_transient( 'soutpaygw_oauth_state' );
+		$code_verifier = get_transient( 'soutpaygw_pkce_verifier' );
 
 		delete_transient( 'soutpaygw_oauth_state' );
 		delete_transient( 'soutpaygw_pkce_verifier' );
 
-		if ( empty( $state ) || ! hash_equals( (string) $saved_state, $state ) ) {
+		if ( empty( $state ) || empty( $saved_state ) || ! hash_equals( (string) $saved_state, $state ) ) {
 			$this->log_debug( 'handle_oauth_callback: state mismatch' );
 			wp_safe_redirect( add_query_arg( 'soutpaygw_oauth', 'error', $settings_url ) );
+			exit;
+		}
+
+		if ( $error ) {
+			$this->log_debug( 'handle_oauth_callback: authorization refused — ' . $error );
+			wp_safe_redirect( add_query_arg( 'soutpaygw_oauth', 'access_denied' === $error ? 'denied' : 'error', $settings_url ) );
 			exit;
 		}
 
@@ -987,15 +816,15 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			exit;
 		}
 
-		$callback_url = add_query_arg( 'wc-api', 'wc_gateway_soutpaygw_oauth', trailingslashit( home_url() ) );
-
-		$body = $this->post_token_endpoint( array(
-			'grant_type'    => 'authorization_code',
-			'code'          => $code,
-			'code_verifier' => $code_verifier,
-			'redirect_uri'  => $callback_url,
-			'client_id'     => SOUTPAYGW_OAUTH_CLIENT_ID,
-		) );
+		$body = $this->post_token_endpoint(
+			array(
+				'grant_type'    => 'authorization_code',
+				'code'          => $code,
+				'code_verifier' => $code_verifier,
+				'redirect_uri'  => $this->oauth_callback_url(),
+				'client_id'     => SOUTPAYGW_OAUTH_CLIENT_ID,
+			)
+		);
 
 		if ( is_wp_error( $body ) ) {
 			$this->log_debug( 'handle_oauth_callback token exchange failed: ' . $body->get_error_message() );
@@ -1003,15 +832,10 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			exit;
 		}
 
-		if ( array_key_exists( 'livemode', $body ) && ! filter_var( $body['livemode'], FILTER_VALIDATE_BOOLEAN ) ) {
-			$this->log_debug( 'handle_oauth_callback: refusing test-mode token' );
-			$this->revoke_token_value( ! empty( $body['refresh_token'] ) ? $body['refresh_token'] : ( $body['access_token'] ?? '' ) );
-			wp_safe_redirect( add_query_arg( 'soutpaygw_oauth', 'testmode', $settings_url ) );
-			exit;
-		}
-
+		$this->connection = array();
 		$this->persist_token_response( $body );
-		$this->register_webhook_endpoint();
+		$this->forget_legacy_credentials();
+		$this->remember_connected_store();
 
 		wp_safe_redirect( add_query_arg( 'soutpaygw_oauth', 'connected', $settings_url ) );
 		exit;
@@ -1019,14 +843,15 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 
 	private function post_token_endpoint( array $payload ) {
 		$response = wp_remote_post(
-			trailingslashit( SOUTPAYGW_API_BASE ) . 'api/v2/oauth/token',
+			trailingslashit( SOUTPAYGW_API_BASE ) . 'api/v1/oauth/token',
 			array(
 				'timeout' => 30,
 				'headers' => array(
 					'Content-Type' => 'application/json',
+					'Accept'       => 'application/json',
 					'User-Agent'   => 'SouthPay-WooCommerce/' . SOUTPAYGW_VERSION,
 				),
-				'body' => wp_json_encode( $payload ),
+				'body'    => wp_json_encode( $payload ),
 			)
 		);
 
@@ -1037,8 +862,8 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		$status = wp_remote_retrieve_response_code( $response );
 		$body   = json_decode( wp_remote_retrieve_body( $response ), true );
 
-		if ( $status !== 200 || empty( $body['access_token'] ) ) {
-			$error_code = is_array( $body ) && isset( $body['error'] ) ? sanitize_text_field( $body['error'] ) : 'unknown';
+		if ( 200 !== $status || empty( $body['access_token'] ) || empty( $body['refresh_token'] ) ) {
+			$error_code = is_array( $body ) && isset( $body['error'] ) && is_string( $body['error'] ) ? sanitize_text_field( $body['error'] ) : 'unknown';
 
 			return new WP_Error(
 				'soutpaygw_token_error',
@@ -1054,48 +879,91 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 	}
 
 	private function persist_token_response( array $body ) {
-		$access_token  = sanitize_text_field( $body['access_token'] );
-		$refresh_token = isset( $body['refresh_token'] ) ? sanitize_text_field( $body['refresh_token'] ) : '';
-		$store_id      = isset( $body['store_id'] ) ? sanitize_text_field( $body['store_id'] ) : '';
-		$expires_in    = isset( $body['expires_in'] ) ? (int) $body['expires_in'] : 0;
-		$expires_at    = $expires_in > 0 ? time() + $expires_in : 0;
+		$expires_in = isset( $body['expires_in'] ) ? (int) $body['expires_in'] : 0;
+		$connection = $this->connection;
 
-		$settings = get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
-		$settings['api_key']                 = $access_token;
-		$settings['refresh_token']           = $refresh_token;
-		$settings['access_token_expires_at'] = (string) $expires_at;
-		if ( $store_id !== '' ) {
-			$settings['oauth_store_id'] = $store_id;
-		}
-		if ( ! isset( $settings['webhook_secret'] ) || empty( $settings['webhook_secret'] ) ) {
-			$settings['webhook_secret']      = '';
-			$settings['webhook_endpoint_id'] = '';
-		}
-		update_option( 'woocommerce_soutpaygw_gateway_settings', $settings );
+		$connection['access_token']            = sanitize_text_field( $body['access_token'] );
+		$connection['refresh_token']           = sanitize_text_field( $body['refresh_token'] );
+		$connection['access_token_expires_at'] = $expires_in > 0 ? time() + $expires_in : 0;
 
-		// Holding a freshly issued token is proof the connection works, so any
-		// outstanding "reconnect required" notice is stale. It used to be
-		// cleared only by landing on the OAuth redirect, which left merchants
-		// staring at a session-expired banner above a healthy connection for
-		// the transient's full day.
+		if ( ! empty( $body['connection_id'] ) ) {
+			$connection['connection_id'] = sanitize_text_field( $body['connection_id'] );
+		}
+		if ( isset( $body['scope'] ) ) {
+			$connection['scope'] = sanitize_text_field( $body['scope'] );
+		}
+
+		$this->save_connection( $connection );
+
 		delete_transient( 'soutpaygw_reconnect_required' );
+	}
 
-		$this->api_key                 = $access_token;
-		$this->refresh_token           = $refresh_token;
-		$this->access_token_expires_at = $expires_at;
-		if ( $store_id !== '' ) {
-			$this->oauth_store_id = $store_id;
+	private function remember_connected_store() {
+		$response = $this->api_request( 'GET', '/api/v1/connection' );
+
+		if ( is_wp_error( $response ) || ! isset( $response['store'] ) || ! is_array( $response['store'] ) ) {
+			return;
 		}
+
+		$store      = $response['store'];
+		$connection = $this->connection;
+
+		$connection['store_id']         = isset( $store['id'] ) ? sanitize_text_field( $store['id'] ) : '';
+		$connection['store_name']       = isset( $store['name'] ) ? sanitize_text_field( $store['name'] ) : '';
+		$connection['display_currency'] = isset( $store['display_currency'] ) ? sanitize_text_field( $store['display_currency'] ) : '';
+
+		$this->save_connection( $connection );
+	}
+
+	private function forget_legacy_credentials() {
+		$settings = get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
+
+		if ( ! is_array( $settings ) ) {
+			return;
+		}
+
+		$legacy = array_intersect_key( $settings, array_flip( self::LEGACY_SETTINGS ) );
+
+		if ( empty( $legacy ) ) {
+			return;
+		}
+
+		update_option( 'woocommerce_soutpaygw_gateway_settings', array_diff_key( $settings, $legacy ) );
+		$this->init_settings();
+	}
+
+	private function load_connection( $connection ) {
+		$this->connection              = is_array( $connection ) ? $connection : array();
+		$this->access_token            = (string) ( $this->connection['access_token'] ?? '' );
+		$this->refresh_token           = (string) ( $this->connection['refresh_token'] ?? '' );
+		$this->access_token_expires_at = (int) ( $this->connection['access_token_expires_at'] ?? 0 );
+		$this->webhook_secret          = (string) ( $this->connection['webhook_secret'] ?? '' );
+	}
+
+	private function save_connection( array $connection ) {
+		update_option( self::CONNECTION_OPTION, $connection, false );
+		$this->load_connection( $connection );
+	}
+
+	private function clear_connection() {
+		delete_option( self::CONNECTION_OPTION );
+		$this->load_connection( array() );
+	}
+
+	private function read_stored_connection() {
+		wp_cache_delete( self::CONNECTION_OPTION, 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
+		wp_cache_delete( 'alloptions', 'options' );
+
+		return get_option( self::CONNECTION_OPTION, array() );
 	}
 
 	private function refresh_access_token() {
-		if ( empty( $this->refresh_token ) ) {
-			return new WP_Error( 'soutpaygw_no_refresh_token', __( 'No refresh token available — manual reconnect required.', 'southpay-gateway-for-woocommerce' ) );
+		if ( '' === $this->refresh_token ) {
+			return new WP_Error( 'soutpaygw_no_refresh_token', __( 'This site is not connected to SouthPay.', 'southpay-gateway-for-woocommerce' ) );
 		}
 
-		$lock_key = 'soutpaygw_refresh_lock';
-
-		if ( ! $this->acquire_refresh_lock( $lock_key ) ) {
+		if ( ! $this->acquire_refresh_lock() ) {
 			if ( $this->await_concurrent_refresh() ) {
 				$this->log_debug( 'refresh_access_token: adopted token from concurrent refresh' );
 				return true;
@@ -1106,16 +974,25 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		}
 
 		try {
-			$settings = $this->reload_settings_from_db();
-			if ( ! empty( $settings['refresh_token'] ) ) {
-				$this->refresh_token = $settings['refresh_token'];
+			$previous = $this->access_token;
+			$this->load_connection( $this->read_stored_connection() );
+
+			if ( '' === $this->refresh_token ) {
+				return new WP_Error( 'soutpaygw_no_refresh_token', __( 'This site is not connected to SouthPay.', 'southpay-gateway-for-woocommerce' ) );
 			}
 
-			$body = $this->post_token_endpoint( array(
-				'grant_type'    => 'refresh_token',
-				'refresh_token' => $this->refresh_token,
-				'client_id'     => SOUTPAYGW_OAUTH_CLIENT_ID,
-			) );
+			if ( $this->access_token !== $previous && ! $this->should_proactively_refresh() ) {
+				$this->log_debug( 'refresh_access_token: token was already rotated by another request' );
+				return true;
+			}
+
+			$body = $this->post_token_endpoint(
+				array(
+					'grant_type'    => 'refresh_token',
+					'refresh_token' => $this->refresh_token,
+					'client_id'     => SOUTPAYGW_OAUTH_CLIENT_ID,
+				)
+			);
 
 			if ( is_wp_error( $body ) ) {
 				$this->log_debug( 'refresh_access_token failed: ' . $body->get_error_message() );
@@ -1133,49 +1010,38 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			$this->log_debug( 'refresh_access_token: rotated successfully' );
 			return true;
 		} finally {
-			delete_option( $lock_key );
+			delete_option( self::REFRESH_LOCK_OPTION );
 		}
 	}
 
-	/**
-	 * Cross-process lock. wp_cache_add is per-request unless a persistent object
-	 * cache is installed, so on a plain WordPress install it never blocked
-	 * anything and two workers would refresh the same token concurrently.
-	 * add_option is backed by the unique index on option_name, so it holds
-	 * whether or not an object cache is present.
-	 */
-	private function acquire_refresh_lock( $lock_key, $timeout = 30 ) {
-		$held = get_option( $lock_key );
+	private function acquire_refresh_lock( $timeout = 30 ) {
+		wp_cache_delete( self::REFRESH_LOCK_OPTION, 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
+
+		$held = get_option( self::REFRESH_LOCK_OPTION );
 
 		if ( false !== $held ) {
 			if ( ( time() - (int) $held ) < $timeout ) {
 				return false;
 			}
-			delete_option( $lock_key );
+			delete_option( self::REFRESH_LOCK_OPTION );
 		}
 
-		return add_option( $lock_key, (string) time(), '', 'no' );
+		return add_option( self::REFRESH_LOCK_OPTION, (string) time(), '', false );
 	}
 
-	/**
-	 * Wait for the worker holding the lock to publish its rotated token, then
-	 * adopt it. Never falls through to refreshing with the same token: that is
-	 * what the server reads as replay, and it used to revoke the whole grant.
-	 */
 	private function await_concurrent_refresh( $max_wait_ms = 5000 ) {
-		$previous = $this->api_key;
+		$previous = $this->access_token;
 		$waited   = 0;
 
 		while ( $waited < $max_wait_ms ) {
 			usleep( 250000 );
 			$waited += 250;
 
-			$settings = $this->reload_settings_from_db();
+			$stored = $this->read_stored_connection();
 
-			if ( ! empty( $settings['api_key'] ) && $settings['api_key'] !== $previous ) {
-				$this->api_key                 = $settings['api_key'];
-				$this->refresh_token           = $settings['refresh_token'] ?? '';
-				$this->access_token_expires_at = (int) ( $settings['access_token_expires_at'] ?? 0 );
+			if ( is_array( $stored ) && ! empty( $stored['access_token'] ) && $stored['access_token'] !== $previous ) {
+				$this->load_connection( $stored );
 				return true;
 			}
 		}
@@ -1183,42 +1049,14 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		return false;
 	}
 
-	private function reload_settings_from_db() {
-		wp_cache_delete( 'woocommerce_soutpaygw_gateway_settings', 'options' );
-		wp_cache_delete( 'alloptions', 'options' );
-
-		return get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
-	}
-
-	/**
-	 * Only a definitive answer from the authorization server should cost the
-	 * merchant their credentials. A timeout or a 5xx is our problem, not theirs,
-	 * and wiping on those forced a manual reconnect after a momentary blip.
-	 */
 	private function is_fatal_grant_error( $error ) {
 		$data = is_wp_error( $error ) ? $error->get_error_data() : null;
 
-		if ( ! is_array( $data ) || empty( $data['oauth_error'] ) ) {
-			return false;
-		}
-
-		return in_array( $data['oauth_error'], array( 'invalid_grant', 'invalid_client' ), true );
+		return is_array( $data ) && isset( $data['oauth_error'] ) && 'invalid_grant' === $data['oauth_error'];
 	}
 
 	private function handle_refresh_failure() {
-		$settings = get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
-		$settings['api_key']                 = '';
-		$settings['refresh_token']           = '';
-		$settings['access_token_expires_at'] = '0';
-		$settings['webhook_secret']          = '';
-		$settings['webhook_endpoint_id']     = '';
-		update_option( 'woocommerce_soutpaygw_gateway_settings', $settings );
-
-		$this->api_key                 = '';
-		$this->refresh_token           = '';
-		$this->access_token_expires_at = 0;
-		$this->webhook_secret          = '';
-
+		$this->clear_connection();
 		set_transient( 'soutpaygw_reconnect_required', 1, DAY_IN_SECONDS );
 	}
 
@@ -1229,37 +1067,33 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			wp_send_json_error( __( 'Permission denied.', 'southpay-gateway-for-woocommerce' ) );
 		}
 
-		$this->revoke_token_value( ! empty( $this->refresh_token ) ? $this->refresh_token : $this->api_key );
-
-		$settings = get_option( 'woocommerce_soutpaygw_gateway_settings', array() );
-		$settings['api_key']                 = '';
-		$settings['refresh_token']           = '';
-		$settings['access_token_expires_at'] = '0';
-		$settings['oauth_store_id']          = '';
-		$settings['webhook_secret']          = '';
-		$settings['webhook_endpoint_id']     = '';
-		update_option( 'woocommerce_soutpaygw_gateway_settings', $settings );
+		$this->revoke_token( '' !== $this->refresh_token ? $this->refresh_token : $this->access_token );
+		$this->clear_connection();
 
 		delete_transient( 'soutpaygw_reconnect_required' );
 
 		wp_send_json_success( __( 'Disconnected successfully.', 'southpay-gateway-for-woocommerce' ) );
 	}
 
-	private function revoke_token_value( $token ) {
-		if ( empty( $token ) ) {
+	private function revoke_token( $token ) {
+		if ( '' === (string) $token ) {
 			return;
 		}
 
 		wp_remote_post(
-			trailingslashit( SOUTPAYGW_API_BASE ) . 'api/v2/oauth/revoke',
+			trailingslashit( SOUTPAYGW_API_BASE ) . 'api/v1/oauth/revoke',
 			array(
 				'timeout' => 10,
 				'headers' => array(
-					'Authorization' => 'Bearer ' . $token,
-					'Content-Type'  => 'application/json',
-					'User-Agent'    => 'SouthPay-WooCommerce/' . SOUTPAYGW_VERSION,
+					'Content-Type' => 'application/json',
+					'User-Agent'   => 'SouthPay-WooCommerce/' . SOUTPAYGW_VERSION,
 				),
-				'body' => '{}',
+				'body'    => wp_json_encode(
+					array(
+						'client_id' => SOUTPAYGW_OAUTH_CLIENT_ID,
+						'token'     => $token,
+					)
+				),
 			)
 		);
 	}

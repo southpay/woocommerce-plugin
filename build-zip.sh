@@ -15,7 +15,6 @@ parent = os.path.dirname(plugin_dir)
 
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zf:
     for root, dirs, files in os.walk(plugin_dir):
-        # Skip dot directories in-place so os.walk doesn't descend into them
         dirs[:] = [d for d in dirs if not d.startswith('.')]
         for file in files:
             if file.startswith('.') or file == 'build-zip.sh':

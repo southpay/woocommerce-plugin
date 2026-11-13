@@ -13,7 +13,9 @@ class SOUTPAYGW_Blocks_Support extends Automattic\WooCommerce\Blocks\Payments\In
 	}
 
 	public function is_active() {
-		return 'yes' === $this->get_setting( 'enabled', 'no' );
+		$gateways = WC()->payment_gateways()->payment_gateways();
+
+		return isset( $gateways[ $this->name ] ) && $gateways[ $this->name ]->is_available();
 	}
 
 	public function get_payment_method_script_handles() {

@@ -2,8 +2,8 @@
 /**
  * @wordpress-plugin
  * Plugin Name:             SouthPay Crypto Payment Gateway
- * Description:             Accept cryptocurrency payments in WooCommerce via SouthPay's hosted checkout. One-click OAuth connect, automatic webhook registration, and on-chain confirmation that updates order status automatically.
- * Version:                 2.1.7
+ * Description:             Connect your WooCommerce store to SouthPay. Sign in to SouthPay once, choose the store to link, and the connection stays current on its own.
+ * Version:                 3.0.0
  * Author:                  SouthPay
  * Author URI:              https://southpay.io/
  * License:                 GPL-2.0-or-later
@@ -20,15 +20,21 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SOUTPAYGW_VERSION', '2.1.7' );
+define( 'SOUTPAYGW_VERSION', '3.0.0' );
 define( 'SOUTPAYGW_PLUGIN_FILE', __FILE__ );
 define( 'SOUTPAYGW_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SOUTPAYGW_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
-define( 'SOUTPAYGW_API_BASE', 'https://api.southpay.io' );
-define( 'SOUTPAYGW_DASHBOARD_BASE', 'https://app.southpay.io' );
 define( 'SOUTPAYGW_PAY_BASE', 'https://pay.southpay.io' );
-define( 'SOUTPAYGW_OAUTH_CLIENT_ID', 'spo_app_woocommerce' );
-define( 'SOUTPAYGW_OAUTH_SCOPES', 'payments:write webhooks:write stores:read offline_access' );
+define( 'SOUTPAYGW_OAUTH_CLIENT_ID', 'woocommerce' );
+define( 'SOUTPAYGW_OAUTH_SCOPES', 'store:read' );
+
+if ( ! defined( 'SOUTPAYGW_API_BASE' ) ) {
+	define( 'SOUTPAYGW_API_BASE', 'https://api.southpay.io' );
+}
+
+if ( ! defined( 'SOUTPAYGW_DASHBOARD_BASE' ) ) {
+	define( 'SOUTPAYGW_DASHBOARD_BASE', 'https://hub.southpay.io' );
+}
 
 add_action( 'before_woocommerce_init', 'soutpaygw_declare_wc_compatibility' );
 
