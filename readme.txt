@@ -4,22 +4,26 @@ Tags: woocommerce, crypto, cryptocurrency, bitcoin, payment gateway
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.0.0
+Stable tag: 3.1.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Connect your WooCommerce store to SouthPay with one sign-in. Version 3 moves the plugin to the current SouthPay platform.
+Accept crypto payments in WooCommerce through SouthPay's hosted checkout. Connect with one sign-in; paid orders update on their own.
 
 == Description ==
 
-SouthPay Crypto Payment Gateway links your WooCommerce site to a store in your SouthPay account. You sign in to SouthPay once, choose the store and approve; the plugin keeps the connection current on its own.
+SouthPay Crypto Payment Gateway links your WooCommerce site to a store in your SouthPay account and lets customers pay for orders in crypto. You sign in to SouthPay once, choose the store and approve; the plugin keeps the connection current on its own.
 
-Version 3 replaces the connection to the previous SouthPay platform, which has been retired. Taking payments at checkout through the new connection is not available yet: until it is, SouthPay stays hidden from customers at checkout and the settings page says so. Sites connected with version 2 need to connect again.
+At checkout the customer is sent to SouthPay's hosted checkout at pay.southpay.io, chooses a coin and pays from their wallet. Once paid they can return to your shop, and the order moves to Processing (or Completed for virtual orders) by itself.
+
+Sites connected with version 3.0 need to connect again once so SouthPay can take payments.
 
 == Features ==
 
 * "Connect with SouthPay": OAuth 2.0 authorization code with PKCE, no keys to copy
 * The connection is tied to one SouthPay store, named on the settings page
+* Hosted checkout: customers choose a coin and pay at pay.southpay.io
+* Orders are marked paid automatically when the customer returns and on a five-minute schedule
 * Access tokens last one hour and are renewed in the background
 * Disconnect from WooCommerce or from the SouthPay dashboard at any time
 * Debug logging via WooCommerce → Status → Logs
@@ -30,6 +34,7 @@ Version 3 replaces the connection to the previous SouthPay platform, which has b
 * WordPress 5.8 or higher
 * WooCommerce 6.0 or higher
 * PHP 7.4 or higher (cURL and OpenSSL extensions enabled)
+* Store currency set to EUR
 * HTTPS on your store domain. SouthPay only returns to https addresses
 * A SouthPay account at https://southpay.io/ in which you are an owner or admin
 
@@ -83,8 +88,10 @@ This plugin connects to SouthPay, and needs that connection to work.
 * When you return, and afterwards whenever the access token needs renewing, your server calls https://api.southpay.io/api/v1/oauth/token.
 * **Test connection** and the step right after connecting call https://api.southpay.io/api/v1/connection to read the linked store's name and display currency.
 * **Disconnect** calls https://api.southpay.io/api/v1/oauth/revoke.
+* When a customer places an order with SouthPay, your server calls https://api.southpay.io/api/v1/connection/checkouts with the order total, the order number and the address of the order-received page. The customer's browser is then sent to https://pay.southpay.io.
+* To learn whether an order has been paid, your server calls https://api.southpay.io/api/v1/connection/checkouts/{id} when the customer returns and every five minutes for recent unpaid orders.
 
-No customer or order data is sent.
+No customer names, addresses or contact details are sent.
 
 This service is provided by SouthPay: https://southpay.io/
 Terms of service: https://southpay.io/terms
@@ -92,9 +99,17 @@ Privacy policy: https://southpay.io/privacy
 
 == Frequently Asked Questions ==
 
-= Can customers pay with SouthPay at checkout? =
+= Which currency does my store need? =
 
-Not yet with version 3. The plugin links your site to your SouthPay store; checkout payments through that link will follow in a later version. Until then SouthPay is not offered at checkout.
+EUR. SouthPay is not offered at checkout in other currencies.
+
+= How does an order get marked as paid? =
+
+The plugin asks SouthPay about the order's checkout when the customer comes back to the order-received page, and every five minutes for unpaid orders from the last two days. Paid orders move to Processing, or Completed for virtual orders. If WooCommerce would cancel an unpaid order, the plugin checks with SouthPay first.
+
+= I connected with version 3.0. What do I need to do? =
+
+Click **Connect again** on the SouthPay settings page and approve taking payments.
 
 = I connected with version 2. What do I need to do? =
 
@@ -109,6 +124,13 @@ Owners and admins of the SouthPay business the store belongs to.
 No.
 
 == Changelog ==
+
+= 3.1.0 =
+* Customers can pay at checkout: each order opens a SouthPay checkout at pay.southpay.io, and the customer returns to the order-received page once paid
+* Orders are marked paid automatically, on the customer's return, every five minutes and before WooCommerce would cancel them as unpaid
+* SouthPay is enabled by default once the site is connected
+* Requires a EUR store currency
+* Sites connected with 3.0 are asked to connect again to allow taking payments
 
 = 3.0.0 =
 * Connect to the current SouthPay platform: authorization at hub.southpay.io, tokens from api.southpay.io/api/v1
@@ -168,6 +190,9 @@ No.
 * Initial release
 
 == Upgrade Notice ==
+
+= 3.1.0 =
+Customers can pay at checkout again. If you connected with 3.0, click Connect again on the SouthPay settings page.
 
 = 3.0.0 =
 The previous SouthPay platform has been retired. After updating, connect again from the SouthPay settings. Checkout payments are not available in this version.

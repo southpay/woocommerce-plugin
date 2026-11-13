@@ -2,8 +2,8 @@
 /**
  * @wordpress-plugin
  * Plugin Name:             SouthPay Crypto Payment Gateway
- * Description:             Connect your WooCommerce store to SouthPay. Sign in to SouthPay once, choose the store to link, and the connection stays current on its own.
- * Version:                 3.0.0
+ * Description:             Accept crypto payments in WooCommerce through SouthPay's hosted checkout. Sign in to SouthPay once, choose the store to link, and paid orders update on their own.
+ * Version:                 3.1.0
  * Author:                  SouthPay
  * Author URI:              https://southpay.io/
  * License:                 GPL-2.0-or-later
@@ -20,13 +20,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SOUTPAYGW_VERSION', '3.0.0' );
+define( 'SOUTPAYGW_VERSION', '3.1.0' );
 define( 'SOUTPAYGW_PLUGIN_FILE', __FILE__ );
 define( 'SOUTPAYGW_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SOUTPAYGW_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'SOUTPAYGW_PAY_BASE', 'https://pay.southpay.io' );
 define( 'SOUTPAYGW_OAUTH_CLIENT_ID', 'woocommerce' );
-define( 'SOUTPAYGW_OAUTH_SCOPES', 'store:read' );
+define( 'SOUTPAYGW_OAUTH_SCOPES', 'store:read payments:write' );
 
 if ( ! defined( 'SOUTPAYGW_API_BASE' ) ) {
 	define( 'SOUTPAYGW_API_BASE', 'https://api.southpay.io' );
@@ -84,4 +84,37 @@ function soutpaygw_register_blocks_support( $registry ) {
 	}
 	require_once SOUTPAYGW_PLUGIN_DIR . 'includes/class-southpay-blocks.php';
 	$registry->register( new SOUTPAYGW_Blocks_Support() );
+}
+
+add_filter( 'cron_schedules', 'soutpaygw_cron_schedules' );
+
+function soutpaygw_cron_schedules( $schedules ) {
+	$schedules['soutpaygw_five_minutes'] = array(
+		'interval' => 5 * MINUTE_IN_SECONDS,
+		'display'  => __( 'Every five minutes', 'southpay-gateway-for-woocommerce' ),
+	);
+	return $schedules;
+}
+
+add_action( 'init', 'soutpaygw_schedule_sync' );
+
+function soutpaygw_schedule_sync() {
+	if ( ! wp_next_scheduled( 'soutpaygw_sync_orders' ) ) {
+		wp_schedule_event( time() + MINUTE_IN_SECONDS, 'soutpaygw_five_minutes', 'soutpaygw_sync_orders' );
+	}
+}
+
+add_action( 'soutpaygw_sync_orders', 'soutpaygw_load_gateway_for_sync', 1 );
+add_action( 'woocommerce_cancel_unpaid_orders', 'soutpaygw_load_gateway_for_sync', 1 );
+
+function soutpaygw_load_gateway_for_sync() {
+	if ( function_exists( 'WC' ) ) {
+		WC()->payment_gateways()->payment_gateways();
+	}
+}
+
+register_deactivation_hook( __FILE__, 'soutpaygw_unschedule_sync' );
+
+function soutpaygw_unschedule_sync() {
+	wp_clear_scheduled_hook( 'soutpaygw_sync_orders' );
 }

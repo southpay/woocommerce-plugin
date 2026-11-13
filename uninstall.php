@@ -10,3 +10,4 @@ delete_option( 'soutpaygw_refresh_lock' );
 delete_transient( 'soutpaygw_pkce_verifier' );
 delete_transient( 'soutpaygw_oauth_state' );
 delete_transient( 'soutpaygw_reconnect_required' );
+wp_clear_scheduled_hook( 'soutpaygw_sync_orders' );

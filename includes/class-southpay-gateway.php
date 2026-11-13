@@ -6,7 +6,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 
-	const SUPPORTED_CURRENCIES = array( 'AUD', 'BRL', 'EUR', 'GBP', 'NGN', 'RUB', 'TRY', 'UAH', 'USD', 'USDT', 'USDC' );
+	const SUPPORTED_CURRENCIES = array( 'EUR' );
+
+	const PAYMENTS_SCOPE = 'payments:write';
 
 	const CONNECTION_OPTION = 'soutpaygw_connection';
 
@@ -23,8 +25,6 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 	private $refresh_token;
 
 	private $access_token_expires_at;
-
-	private $webhook_secret;
 
 	private $show_icon;
 
@@ -58,9 +58,10 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		$this->load_connection( get_option( self::CONNECTION_OPTION, array() ) );
 
 		add_action( 'woocommerce_update_options_payment_gateways_' . $this->id, array( $this, 'process_admin_options' ) );
-		add_action( 'woocommerce_api_wc_gateway_soutpaygw', array( $this, 'handle_webhook' ) );
 		add_action( 'woocommerce_api_' . self::OAUTH_CALLBACK, array( $this, 'handle_oauth_callback' ) );
 		add_action( 'woocommerce_thankyou_' . $this->id, array( $this, 'thankyou_page' ) );
+		add_action( 'soutpaygw_sync_orders', array( $this, 'sync_open_orders' ) );
+		add_filter( 'woocommerce_cancel_unpaid_order', array( $this, 'keep_paid_order' ), 10, 2 );
 		add_action( 'admin_notices', array( $this, 'admin_notices' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'admin_enqueue_scripts' ) );
 		add_action( 'wp_ajax_soutpaygw_test_connection', array( $this, 'ajax_test_connection' ) );
@@ -186,6 +187,20 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 			return;
 		}
 
+		if ( ! $this->can_take_payments() ) {
+			printf(
+				'<div class="notice notice-warning"><p>%s</p></div>',
+				wp_kses(
+					sprintf(
+						/* translators: %s: link to SouthPay settings page */
+						__( 'SouthPay needs permission to take payments before customers can pay with it. <a href="%s">Connect again</a> and approve taking payments.', 'southpay-gateway-for-woocommerce' ),
+						esc_url( admin_url( 'admin.php?page=wc-settings&tab=checkout&section=soutpaygw_gateway' ) )
+					),
+					array( 'a' => array( 'href' => array() ) )
+				)
+			);
+		}
+
 		if ( ! in_array( get_woocommerce_currency(), self::SUPPORTED_CURRENCIES, true ) ) {
 			printf(
 				'<div class="notice notice-error"><p>%s</p></div>',
@@ -208,7 +223,7 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 				'title'   => __( 'Enable SouthPay', 'southpay-gateway-for-woocommerce' ),
 				'type'    => 'checkbox',
 				'label'   => __( 'Allow customers to pay with cryptocurrency', 'southpay-gateway-for-woocommerce' ),
-				'default' => 'no',
+				'default' => 'yes',
 			),
 
 			'section_account' => array(
@@ -325,9 +340,14 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 							</button>
 						</div>
 						<?php if ( ! $this->can_take_payments() ) : ?>
-							<p class="soutpaygw-hint">
-								<?php esc_html_e( 'Your store is linked to SouthPay. Taking payments at checkout through this connection is not available yet, so SouthPay stays hidden from your customers for now.', 'southpay-gateway-for-woocommerce' ); ?>
-							</p>
+							<div class="soutpaygw-connect-cta">
+								<p class="soutpaygw-hint">
+									<?php esc_html_e( 'This connection was made before SouthPay could take payments at checkout. Connect again and approve taking payments so customers can pay with SouthPay.', 'southpay-gateway-for-woocommerce' ); ?>
+								</p>
+								<button type="button" class="button button-primary" id="soutpaygw-connect-btn" data-nonce="<?php echo esc_attr( $nonce ); ?>">
+									<?php esc_html_e( 'Connect again', 'southpay-gateway-for-woocommerce' ); ?>
+								</button>
+							</div>
 						<?php endif; ?>
 
 					<?php else : ?>
@@ -406,215 +426,158 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 	public function process_payment( $order_id ) {
 		$order = wc_get_order( $order_id );
 
-		if ( ! $this->can_take_payments() ) {
+		if ( ! $order || ! $this->can_take_payments() || 'EUR' !== $order->get_currency() ) {
 			wc_add_notice( esc_html__( 'Payment could not be started. Please choose another payment method.', 'southpay-gateway-for-woocommerce' ), 'error' );
 			return array( 'result' => 'failure' );
 		}
 
-		$line_items = array();
-		$image_url  = '';
+		$amount_cents = (int) round( (float) $order->get_total() * 100 );
+		$reference    = $this->invoice_prefix . $order->get_order_number();
 
-		foreach ( $order->get_items() as $item ) {
-			$quantity   = max( 1, (int) $item->get_quantity() );
-			$unit_cents = (int) round( ( (float) $item->get_subtotal() / $quantity ) * 100 );
-
-			$item_image = '';
-			$product    = $item->get_product();
-			if ( $product && $product->get_image_id() ) {
-				$item_image = wp_get_attachment_url( $product->get_image_id() );
-			}
-
-			if ( '' === $image_url && $item_image ) {
-				$image_url = $item_image;
-			}
-
-			$line_item = array(
-				'description'       => $item->get_name(),
-				'quantity'          => $quantity,
-				'unit_amount_cents' => $unit_cents,
-			);
-
-			if ( $item_image ) {
-				$line_item['image_url'] = esc_url_raw( $item_image );
-			}
-
-			$line_items[] = $line_item;
-		}
-
-		$body = array(
-			'payment_intent' => array(
-				'amount'      => number_format( (float) $order->get_total(), 2, '.', '' ),
-				'currency'    => $order->get_currency(),
-				'success_url' => $this->get_return_url( $order ),
-				'failed_url'  => $order->get_cancel_order_url_raw(),
-				'metadata'    => array(
-					'order_id'  => (string) $order_id,
-					'order_ref' => $this->invoice_prefix . $order->get_order_number(),
-					'source'    => 'woocommerce',
-				),
-			),
-		);
-
-		if ( ! empty( $line_items ) ) {
-			$body['payment_intent']['line_items'] = $line_items;
-		}
-
-		if ( '' !== $image_url ) {
-			$body['payment_intent']['image_url'] = esc_url_raw( $image_url );
-		}
-
-		$response = $this->api_request(
+		$checkout = $this->api_request(
 			'POST',
-			'/api/v2/payments',
-			$body,
-			array( 'Idempotency-Key' => 'WC-' . $order_id . '-' . $order->get_order_key() )
+			'/api/v1/connection/checkouts',
+			array(
+				'amount_cents'    => $amount_cents,
+				'order_reference' => $reference,
+				/* translators: %s: order number */
+				'description'     => sprintf( __( 'Order %s', 'southpay-gateway-for-woocommerce' ), $order->get_order_number() ),
+				'return_url'      => $this->get_return_url( $order ),
+			),
+			array( 'Idempotency-Key' => 'wc-' . $order->get_id() . '-' . $order->get_order_key() . '-' . $amount_cents )
 		);
 
-		if ( is_wp_error( $response ) ) {
-			wc_add_notice(
-				sprintf(
-					/* translators: %s: error message returned from SouthPay API */
-					__( 'Payment error: %s', 'southpay-gateway-for-woocommerce' ),
-					esc_html( $response->get_error_message() )
-				),
-				'error'
-			);
+		if ( is_wp_error( $checkout ) || empty( $checkout['id'] ) || empty( $checkout['code'] ) ) {
+			$this->log_debug( 'process_payment: ' . ( is_wp_error( $checkout ) ? $checkout->get_error_message() : 'checkout missing from response' ) );
+			wc_add_notice( esc_html__( 'Payment could not be started. Please try again or choose another payment method.', 'southpay-gateway-for-woocommerce' ), 'error' );
 			return array( 'result' => 'failure' );
 		}
 
-		$reference = isset( $response['reference'] ) ? sanitize_text_field( $response['reference'] ) : '';
+		$checkout_id   = sanitize_text_field( $checkout['id'] );
+		$checkout_code = sanitize_text_field( $checkout['code'] );
+		$is_new        = $order->get_meta( '_soutpaygw_checkout_id' ) !== $checkout_id;
 
-		if ( empty( $reference ) ) {
-			$this->log_debug( 'process_payment: missing reference in response' );
-			wc_add_notice( esc_html__( 'Payment could not be started. Please try again.', 'southpay-gateway-for-woocommerce' ), 'error' );
-			return array( 'result' => 'failure' );
-		}
-
-		$checkout_url = apply_filters(
-			'soutpaygw_checkout_url',
-			trailingslashit( SOUTPAYGW_PAY_BASE ) . rawurlencode( $reference ),
-			$reference,
-			$order
-		);
-
-		$order->update_meta_data( '_soutpaygw_reference', $reference );
-		$order->update_status( 'pending', __( 'Awaiting SouthPay crypto payment.', 'southpay-gateway-for-woocommerce' ) );
+		$order->update_meta_data( '_soutpaygw_checkout_id', $checkout_id );
+		$order->update_meta_data( '_soutpaygw_checkout_code', $checkout_code );
 		$order->save();
+
+		if ( 'paid' === ( $checkout['status'] ?? '' ) ) {
+			$this->complete_order( $order, $checkout );
+			return array(
+				'result'   => 'success',
+				'redirect' => $this->get_return_url( $order ),
+			);
+		}
+
+		if ( $is_new ) {
+			$order->add_order_note(
+				sprintf(
+					/* translators: %s: SouthPay checkout code */
+					__( 'Customer sent to SouthPay checkout %s.', 'southpay-gateway-for-woocommerce' ),
+					$checkout_code
+				)
+			);
+		}
 
 		return array(
 			'result'   => 'success',
-			'redirect' => $checkout_url,
+			'redirect' => apply_filters(
+				'soutpaygw_checkout_url',
+				trailingslashit( SOUTPAYGW_PAY_BASE ) . rawurlencode( $checkout_code ),
+				$checkout_code,
+				$order
+			),
 		);
 	}
 
-	public function handle_webhook() {
-		$raw_body = file_get_contents( 'php://input' );
-
-		if ( empty( $raw_body ) ) {
-			wp_die( 'Empty payload', 'SouthPay Webhook', array( 'response' => 400 ) );
-		}
-
-		$signature = isset( $_SERVER['HTTP_SOUTHPAY_SIGNATURE'] )
-			? sanitize_text_field( wp_unslash( $_SERVER['HTTP_SOUTHPAY_SIGNATURE'] ) )
-			: '';
-
-		if ( empty( $signature ) || ! $this->verify_webhook_signature( $raw_body, $signature ) ) {
-			$this->log_debug( 'handle_webhook: signature verification failed' );
-			wp_die( 'Unauthorized', 'SouthPay Webhook', array( 'response' => 403 ) );
-		}
-
-		$payload = json_decode( $raw_body, true );
-
-		if ( ! is_array( $payload ) ) {
-			wp_die( 'Invalid JSON', 'SouthPay Webhook', array( 'response' => 400 ) );
-		}
-
-		$event_type = isset( $payload['type'] ) ? sanitize_text_field( $payload['type'] ) : '';
-		$object     = isset( $payload['data']['object'] ) ? $payload['data']['object'] : array();
-		$order_id   = isset( $object['metadata']['order_id'] ) ? absint( $object['metadata']['order_id'] ) : 0;
-		$order      = $order_id ? wc_get_order( $order_id ) : false;
-
-		if ( ! $order ) {
-			wp_die( 'Order not found', 'SouthPay Webhook', array( 'response' => 404 ) );
-		}
-
-		$this->log_debug( 'handle_webhook: event=' . $event_type . ' order=' . $order_id );
-
-		switch ( $event_type ) {
-			case 'payment_intent.completed':
-				$this->payment_completed( $order, $object );
-				break;
-
-			case 'payment_intent.failed':
-				if ( ! $order->has_status( array( 'failed', 'cancelled' ) ) ) {
-					$order->update_status( 'failed', __( 'SouthPay payment failed.', 'southpay-gateway-for-woocommerce' ) );
-				}
-				break;
-
-			case 'payment_intent.expired':
-				if ( ! $order->has_status( array( 'failed', 'cancelled', 'processing', 'completed' ) ) ) {
-					$order->update_status( 'cancelled', __( 'SouthPay payment expired without being completed.', 'southpay-gateway-for-woocommerce' ) );
-				}
-				break;
-		}
-
-		status_header( 200 );
-		exit;
-	}
-
-	private function verify_webhook_signature( $raw_body, $signature_header ) {
-		if ( empty( $this->webhook_secret ) ) {
-			return false;
-		}
-
-		$parts = array();
-		foreach ( explode( ',', $signature_header ) as $part ) {
-			$pair = explode( '=', trim( $part ), 2 );
-			if ( 2 === count( $pair ) ) {
-				$parts[ trim( $pair[0] ) ] = trim( $pair[1] );
-			}
-		}
-
-		if ( empty( $parts['t'] ) || empty( $parts['v1'] ) ) {
-			return false;
-		}
-
-		$signed_payload = $parts['t'] . '.' . $raw_body;
-		$expected       = hash_hmac( 'sha256', $signed_payload, $this->webhook_secret );
-
-		return hash_equals( $expected, $parts['v1'] );
-	}
-
-	private function payment_completed( $order, $object ) {
-		if ( $order->has_status( array( 'processing', 'completed' ) ) ) {
+	public function sync_order( $order ) {
+		if ( ! $order instanceof WC_Order || $order->get_payment_method() !== $this->id || $order->is_paid() || ! $this->can_take_payments() ) {
 			return;
 		}
 
-		$reference = isset( $object['id'] ) ? sanitize_text_field( $object['id'] ) : '';
-		$amount    = isset( $object['settlement_amount_cents'] ) ? absint( $object['settlement_amount_cents'] ) : 0;
-		$currency  = isset( $object['settlement_currency'] ) ? strtoupper( sanitize_text_field( $object['settlement_currency'] ) ) : '';
+		$checkout_id = (string) $order->get_meta( '_soutpaygw_checkout_id' );
 
-		$note = sprintf(
-			/* translators: 1: SouthPay payment reference, 2: formatted settlement amount, 3: currency code */
-			__( 'Payment confirmed by SouthPay. Reference: %1$s | Amount: %2$s %3$s', 'southpay-gateway-for-woocommerce' ),
-			$reference,
-			number_format( $amount / 100, 2 ),
-			$currency
+		if ( '' === $checkout_id ) {
+			return;
+		}
+
+		$checkout = $this->api_request( 'GET', '/api/v1/connection/checkouts/' . rawurlencode( $checkout_id ) );
+
+		if ( is_wp_error( $checkout ) ) {
+			$this->log_debug( 'sync_order ' . $order->get_id() . ': ' . $checkout->get_error_message() );
+			return;
+		}
+
+		if ( 'paid' === ( $checkout['status'] ?? '' ) ) {
+			$this->complete_order( $order, $checkout );
+		}
+	}
+
+	public function sync_open_orders() {
+		if ( ! $this->can_take_payments() ) {
+			return;
+		}
+
+		$orders = wc_get_orders(
+			array(
+				'payment_method' => $this->id,
+				'status'         => array( 'pending', 'on-hold', 'failed', 'cancelled' ),
+				'date_created'   => '>' . ( time() - 2 * DAY_IN_SECONDS ),
+				'limit'          => 50,
+				'orderby'        => 'date',
+				'order'          => 'DESC',
+			)
 		);
 
-		$order->add_order_note( $note );
-		$order->payment_complete( $reference );
+		foreach ( $orders as $order ) {
+			$this->sync_order( $order );
+		}
+	}
+
+	public function keep_paid_order( $cancel, $order ) {
+		if ( ! $cancel || ! $order instanceof WC_Order || $order->get_payment_method() !== $this->id ) {
+			return $cancel;
+		}
+
+		$this->sync_order( $order );
+
+		return ! wc_get_order( $order->get_id() )->is_paid();
+	}
+
+	private function complete_order( $order, array $checkout ) {
+		$order = wc_get_order( $order->get_id() );
+
+		if ( ! $order || $order->is_paid() ) {
+			return;
+		}
+
+		$payment_reference = sanitize_text_field( (string) ( $checkout['payment_reference'] ?? '' ) );
+
+		$order->add_order_note(
+			sprintf(
+				/* translators: %s: SouthPay payment reference */
+				__( 'Paid with SouthPay. Payment reference: %s', 'southpay-gateway-for-woocommerce' ),
+				'' !== $payment_reference ? $payment_reference : '-'
+			)
+		);
+		$order->payment_complete( $payment_reference );
 	}
 
 	public function thankyou_page( $order_id ) {
 		$order = wc_get_order( $order_id );
 
-		if ( ! $order || $order->has_status( array( 'processing', 'completed' ) ) ) {
+		if ( ! $order ) {
+			return;
+		}
+
+		$this->sync_order( $order );
+
+		if ( wc_get_order( $order_id )->is_paid() ) {
 			return;
 		}
 
 		echo '<div class="woocommerce-info">' .
-			esc_html__( 'Your crypto payment is being confirmed on the blockchain. We\'ll send you an email as soon as it clears — usually within a few minutes.', 'southpay-gateway-for-woocommerce' ) .
+			esc_html__( 'We are waiting for SouthPay to confirm your payment. Crypto payments usually confirm within a few minutes; reload this page to see the latest status. We will email you once it is confirmed.', 'southpay-gateway-for-woocommerce' ) .
 			'</div>';
 	}
 
@@ -725,7 +688,7 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 	}
 
 	private function can_take_payments() {
-		return $this->is_connected() && '' !== $this->webhook_secret;
+		return $this->is_connected() && in_array( self::PAYMENTS_SCOPE, explode( ' ', (string) ( $this->connection['scope'] ?? '' ) ), true );
 	}
 
 	private function has_legacy_credentials() {
@@ -937,7 +900,6 @@ class SOUTPAYGW_Gateway extends WC_Payment_Gateway {
 		$this->access_token            = (string) ( $this->connection['access_token'] ?? '' );
 		$this->refresh_token           = (string) ( $this->connection['refresh_token'] ?? '' );
 		$this->access_token_expires_at = (int) ( $this->connection['access_token_expires_at'] ?? 0 );
-		$this->webhook_secret          = (string) ( $this->connection['webhook_secret'] ?? '' );
 	}
 
 	private function save_connection( array $connection ) {
